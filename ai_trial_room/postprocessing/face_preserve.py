@@ -36,6 +36,8 @@ from typing import Sequence
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
+from ai_trial_room.config import CONFIG, IdentityConfig
+from ai_trial_room.postprocessing.blend import laplacian_blend, match_region_tone
 from ai_trial_room.preprocessing.person import PersonAssets
 from ai_trial_room.utils.logging_setup import get_logger
 
@@ -164,12 +166,34 @@ def _convex_hull(points: Sequence[tuple[float, float]]) -> list[tuple[float, flo
 
 
 def _expand_polygon(
-    polygon: Sequence[tuple[float, float]], amount: float
+    polygon: Sequence[tuple[float, float]],
+    amount: float,
+    *,
+    downward_factor: float = 0.35,
 ) -> list[tuple[float, float]]:
     """Scale a polygon outward from its centroid by ``amount`` pixels.
 
     A cheap approximation of polygon offsetting: adequate here because the face
     hull is roughly convex and roughly circular.
+
+    Expansion is *anisotropic*. Growing upward and sideways picks up the hairline
+    and jaw, which is wanted. Growing downward by the same amount would push the
+    mask onto the neck and the blouse neckline - and pasting the original
+    neckline back over a newly generated choli is a very visible failure. So
+    downward growth is scaled by ``downward_factor``.
+
+    Parameters
+    ----------
+    polygon:
+        Hull vertices.
+    amount:
+        Outward offset in pixels.
+    downward_factor:
+        Multiplier applied to ``amount`` for vertices below the centroid.
+
+    Returns
+    -------
+    list[tuple[float, float]]
     """
     xs = [p[0] for p in polygon]
     ys = [p[1] for p in polygon]
@@ -179,11 +203,17 @@ def _expand_polygon(
     for x, y in polygon:
         dx, dy = x - cx, y - cy
         length = (dx * dx + dy * dy) ** 0.5 or 1.0
-        expanded.append((x + dx / length * amount, y + dy / length * amount))
+        scale = amount * (downward_factor if dy > 0 else 1.0)
+        expanded.append((x + dx / length * scale, y + dy / length * scale))
     return expanded
 
 
-def build_face_mask(region: FaceRegion, *, feather: float | None = None) -> Image.Image:
+def build_face_mask(
+    region: FaceRegion,
+    *,
+    feather: float | None = None,
+    strength: float = 1.0,
+) -> Image.Image:
     """Render a feathered 8-bit mask over ``region``.
 
     Parameters
@@ -192,6 +222,9 @@ def build_face_mask(region: FaceRegion, *, feather: float | None = None) -> Imag
         Detected face.
     feather:
         Blur sigma in pixels. Defaults to :data:`FEATHER_RATIO` of face width.
+    strength:
+        Peak mask opacity, 0-1. Values below 1 let some of the generated face
+        through, which can look more natural under heavy relighting.
 
     Returns
     -------
@@ -203,13 +236,28 @@ def build_face_mask(region: FaceRegion, *, feather: float | None = None) -> Imag
 
     polygon = _expand_polygon(region.polygon, region.width * HULL_EXPAND_RATIO)
 
+    peak = int(round(255 * min(max(strength, 0.0), 1.0)))
     mask = Image.new("L", (width, height), 0)
-    ImageDraw.Draw(mask).polygon([(float(x), float(y)) for x, y in polygon], fill=255)
+    ImageDraw.Draw(mask).polygon([(float(x), float(y)) for x, y in polygon], fill=peak)
     return mask.filter(ImageFilter.GaussianBlur(sigma))
 
 
-def restore_face(generated: Image.Image, person: PersonAssets) -> Image.Image:
+def restore_face(
+    generated: Image.Image,
+    person: PersonAssets,
+    *,
+    config: IdentityConfig | None = None,
+) -> Image.Image:
     """Blend the original face over ``generated``.
+
+    Pipeline, each step guarded and skippable:
+
+    1. Detect the face in both images.
+    2. Abort if the head moved - see :data:`MAX_CENTROID_DRIFT_RATIO`.
+    3. Optionally shift the original face's colour toward the generated frame's,
+       so a relit result does not get a mismatched face pasted in.
+    4. Blend through a feathered hull, using a Laplacian pyramid so lighting
+       cross-fades smoothly while facial detail stays sharp.
 
     Parameters
     ----------
@@ -217,6 +265,8 @@ def restore_face(generated: Image.Image, person: PersonAssets) -> Image.Image:
         Model output, same size as ``person.image``.
     person:
         Preprocessed person assets; ``person.image`` supplies the source face.
+    config:
+        Identity settings. Defaults to :attr:`AppConfig.identity`.
 
     Returns
     -------
@@ -225,6 +275,8 @@ def restore_face(generated: Image.Image, person: PersonAssets) -> Image.Image:
         unsafe. Never raises - identity preservation is an enhancement, and a
         failure here must not lose the user's result.
     """
+    config = config or CONFIG.identity
+
     source = person.image
     if generated.size != source.size:
         logger.warning(
@@ -247,7 +299,7 @@ def restore_face(generated: Image.Image, person: PersonAssets) -> Image.Image:
     sx, sy = source_face.centroid
     gx, gy = generated_face.centroid
     drift = ((sx - gx) ** 2 + (sy - gy) ** 2) ** 0.5
-    allowed = source_face.width * MAX_CENTROID_DRIFT_RATIO
+    allowed = source_face.width * config.max_drift_ratio
 
     if drift > allowed:
         logger.warning(
@@ -257,7 +309,33 @@ def restore_face(generated: Image.Image, person: PersonAssets) -> Image.Image:
         )
         return generated
 
-    mask = build_face_mask(source_face)
-    blended = Image.composite(source.convert("RGB"), generated.convert("RGB"), mask)
-    logger.info("Face preserved (drift %.1f px, feather %.0f px).", drift, source_face.width * FEATHER_RATIO)
+    mask = build_face_mask(source_face, strength=config.strength)
+    face_source = source.convert("RGB")
+
+    if config.match_skin_tone:
+        face_source = match_region_tone(face_source, generated, mask, strength=0.7)
+
+    try:
+        if config.laplacian:
+            blended = laplacian_blend(
+                face_source,
+                generated.convert("RGB"),
+                mask,
+                levels=config.pyramid_levels,
+            )
+            method = f"laplacian x{config.pyramid_levels}"
+        else:
+            blended = Image.composite(face_source, generated.convert("RGB"), mask)
+            method = "alpha"
+    except Exception as exc:  # noqa: BLE001 - never lose the result over polish
+        logger.warning("Face blend failed (%s); returning unblended output.", exc)
+        return generated
+
+    logger.info(
+        "Face preserved via %s (drift %.1f px, strength %.2f, tone_match=%s).",
+        method,
+        drift,
+        config.strength,
+        config.match_skin_tone,
+    )
     return blended

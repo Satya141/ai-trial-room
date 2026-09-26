@@ -170,6 +170,192 @@ def feather_composite(
     return Image.composite(foreground.convert("RGB"), background.convert("RGB"), soft)
 
 
+def laplacian_blend(
+    foreground: Image.Image,
+    background: Image.Image,
+    mask: Image.Image,
+    *,
+    levels: int = 5,
+) -> Image.Image:
+    """Blend two images through ``mask`` using a Laplacian pyramid.
+
+    Why this beats a feathered alpha composite
+    ------------------------------------------
+    A straight composite blends every spatial frequency at the same rate, so a
+    wide feather needed to hide the seam also cross-fades facial detail, and a
+    narrow feather leaves a visible patch edge whenever the two images differ in
+    brightness. That is exactly the case here: the generated image has been
+    relit by the model, so the original face is a different exposure.
+
+    A Laplacian blend decomposes both images by frequency and blends each band
+    with a correspondingly blurred mask. Low frequencies (lighting, colour)
+    cross-fade gradually so the transition is invisible; high frequencies
+    (pores, eyelashes, hair) switch sharply so the face stays crisp.
+
+    Parameters
+    ----------
+    foreground:
+        Image taken where ``mask`` is white - the original face.
+    background:
+        Image taken where ``mask`` is black - the generated try-on.
+    mask:
+        ``L`` mask.
+    levels:
+        Pyramid depth. Each level halves resolution; 5 suits faces from roughly
+        64 to 1024 px wide. Clamped so the smallest level stays at least 8 px.
+
+    Returns
+    -------
+    Image.Image
+        The blended RGB image.
+    """
+    size = background.size
+    if foreground.size != size:
+        foreground = foreground.resize(size, Image.Resampling.LANCZOS)
+    if mask.size != size:
+        mask = mask.resize(size, Image.Resampling.LANCZOS)
+
+    # Keep the coarsest level usable: halving below ~8 px adds nothing.
+    max_levels = max(1, int(np.floor(np.log2(max(1, min(size)) / 8.0))))
+    levels = max(1, min(levels, max_levels))
+
+    fg = np.asarray(foreground.convert("RGB"), dtype=np.float32)
+    bg = np.asarray(background.convert("RGB"), dtype=np.float32)
+    alpha = np.asarray(mask.convert("L"), dtype=np.float32)[..., None] / 255.0
+
+    fg_pyramid = _gaussian_pyramid(fg, levels)
+    bg_pyramid = _gaussian_pyramid(bg, levels)
+    alpha_pyramid = _gaussian_pyramid(alpha, levels)
+
+    # Start from the blended coarsest level, then add back each detail band.
+    result = (
+        fg_pyramid[-1] * alpha_pyramid[-1] + bg_pyramid[-1] * (1.0 - alpha_pyramid[-1])
+    )
+
+    for level in range(levels - 2, -1, -1):
+        target_shape = fg_pyramid[level].shape[:2]
+        result = _upsample(result, target_shape)
+
+        fg_detail = fg_pyramid[level] - _upsample(fg_pyramid[level + 1], target_shape)
+        bg_detail = bg_pyramid[level] - _upsample(bg_pyramid[level + 1], target_shape)
+        band_alpha = alpha_pyramid[level]
+
+        result = result + fg_detail * band_alpha + bg_detail * (1.0 - band_alpha)
+
+    return Image.fromarray(np.clip(result, 0, 255).astype(np.uint8), mode="RGB")
+
+
+def _gaussian_pyramid(array: np.ndarray, levels: int) -> list[np.ndarray]:
+    """Build a Gaussian pyramid, coarsest level last."""
+    pyramid = [array]
+    for _ in range(levels - 1):
+        pyramid.append(_downsample(pyramid[-1]))
+    return pyramid
+
+
+def _blur5(array: np.ndarray) -> np.ndarray:
+    """Apply a separable 5-tap binomial blur with edge replication.
+
+    The classic ``[1 4 6 4 1] / 16`` kernel used for Gaussian pyramids. Applied
+    as two 1-D passes, which is why this stays fast in pure numpy.
+    """
+    kernel = np.array([1.0, 4.0, 6.0, 4.0, 1.0], dtype=np.float32) / 16.0
+    out = array
+
+    for axis in (0, 1):
+        padded = np.pad(
+            out,
+            [(2, 2) if index == axis else (0, 0) for index in range(out.ndim)],
+            mode="edge",
+        )
+        shape = [slice(None)] * out.ndim
+        accumulated = np.zeros_like(out)
+        for tap, weight in enumerate(kernel):
+            shape[axis] = slice(tap, tap + out.shape[axis])
+            accumulated = accumulated + padded[tuple(shape)] * weight
+        out = accumulated
+
+    return out
+
+
+def _downsample(array: np.ndarray) -> np.ndarray:
+    """Blur then take every second pixel, halving both spatial dimensions."""
+    return _blur5(array)[::2, ::2]
+
+
+def _upsample(array: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Nearest-neighbour upsample to ``shape``, then blur to smooth it.
+
+    Nearest-neighbour plus a blur is equivalent in effect to the usual
+    zero-insert-and-blur expand step, and avoids an interpolation dependency.
+    """
+    height, width = shape
+    row_index = np.minimum((np.arange(height) // 2), array.shape[0] - 1)
+    col_index = np.minimum((np.arange(width) // 2), array.shape[1] - 1)
+    expanded = array[row_index][:, col_index]
+    return _blur5(expanded)
+
+
+def match_region_tone(
+    source: Image.Image,
+    target: Image.Image,
+    mask: Image.Image,
+    *,
+    strength: float = 0.7,
+) -> Image.Image:
+    """Shift ``source``'s colour inside ``mask`` toward ``target``'s in that area.
+
+    Used before face blending: if the model relit the person warmly, the original
+    face needs the same warm cast or it reads as a cut-out sticker. Only the mean
+    per-channel offset is transferred, not the variance, so the face keeps its own
+    contrast and texture.
+
+    Parameters
+    ----------
+    source:
+        Image to correct - the original photo.
+    target:
+        Image whose local colour should be matched - the generated output.
+    mask:
+        ``L`` mask defining the region whose statistics are compared.
+    strength:
+        0.0 leaves ``source`` untouched, 1.0 fully adopts ``target``'s mean.
+
+    Returns
+    -------
+    Image.Image
+        The corrected RGB image.
+    """
+    if strength <= 0.0:
+        return source
+
+    size = source.size
+    if target.size != size:
+        target = target.resize(size, Image.Resampling.LANCZOS)
+    if mask.size != size:
+        mask = mask.resize(size, Image.Resampling.LANCZOS)
+
+    weights = np.asarray(mask.convert("L"), dtype=np.float32) / 255.0
+    total = float(weights.sum())
+    if total < 64.0:  # region too small for a meaningful statistic
+        return source
+
+    src = np.asarray(source.convert("RGB"), dtype=np.float32)
+    tgt = np.asarray(target.convert("RGB"), dtype=np.float32)
+    weights3 = weights[..., None]
+
+    src_mean = (src * weights3).sum(axis=(0, 1)) / total
+    tgt_mean = (tgt * weights3).sum(axis=(0, 1)) / total
+
+    # Clamp the shift: a large offset means the model changed the person, and
+    # chasing it would tint the face wrongly.
+    offset = np.clip((tgt_mean - src_mean) * strength, -28.0, 28.0)
+    corrected = src + offset * weights3
+
+    logger.debug("Region tone offset %s (strength %.2f)", np.round(offset, 1), strength)
+    return Image.fromarray(np.clip(corrected, 0, 255).astype(np.uint8), mode="RGB")
+
+
 def sharpen_garment_region(
     image: Image.Image, mask: Image.Image, *, amount: float = 0.35
 ) -> Image.Image:

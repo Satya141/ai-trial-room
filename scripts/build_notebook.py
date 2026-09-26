@@ -210,6 +210,12 @@ os.environ["AITR_TRUE_CFG"] = "4.0"
 # the CatVTON research baseline for non-commercial comparison.
 # os.environ["ALLOW_NONCOMMERCIAL"] = "1"
 
+# --- quality (Phase 2) ------------------------------------------------------ #
+# fast | balanced | best. "best" adds a second pass over the pallu / dupatta.
+os.environ["AITR_PRESET"] = "balanced"
+os.environ["AITR_IDENTITY_STRENGTH"] = "0.92"  # face-blend opacity, 0.5-1.0
+os.environ["AITR_VALIDATE"] = "1"             # flag questionable results
+
 os.environ["AITR_SHARE"] = "1"   # public Gradio link
 os.environ["AITR_LOG_LEVEL"] = "INFO"
 
@@ -218,10 +224,20 @@ os.environ["HF_HOME"] = "/kaggle/working/.hf" if Path("/kaggle").exists() else s
 print("configured")
 """
     ),
-    markdown("## 5. Sanity check — no GPU needed, no weights downloaded"),
+    markdown(
+        """
+## 5. Sanity check — no GPU needed, no weights downloaded
+
+109 tests covering mask geometry, drape prompts, Laplacian blending, output
+validation, licence gating and batch orchestration.
+"""
+    ),
     code(
         """
 !python tests/test_core.py
+!python tests/test_wiring.py
+!python tests/test_phase2.py
+!python tests/test_batch_e2e.py
 """
     ),
     code(
@@ -330,6 +346,53 @@ see is the model, not the noise.
     --person assets/examples/person_01.jpg \\
     --garment assets/examples/saree_01.jpg \\
     --category saree --sweep-drapes --steps 30 --seed 12345
+"""
+    ),
+    markdown(
+        """
+## 9. Optional: batch a whole catalogue
+
+One model photo, a folder of garments, every combination rendered with a
+`manifest.csv` you can sort by "needs a human look". Check the job count with
+`--dry-run` before committing a GPU session to it.
+"""
+    ),
+    code(
+        """
+!python scripts/batch_catalogue.py \\
+    --person assets/examples/person_01.jpg \\
+    --garments assets/examples \\
+    --category saree --dry-run
+"""
+    ),
+    code(
+        """
+# Drop --dry-run to actually render. Add --all-drapes for a 4x lookbook,
+# --preset best for the pallu refinement pass, --resume to continue a stopped run.
+!python scripts/batch_catalogue.py \\
+    --person assets/examples/person_01.jpg \\
+    --garments assets/examples \\
+    --category saree --preset balanced
+"""
+    ),
+    code(
+        """
+import csv
+from pathlib import Path
+
+runs = sorted(Path("outputs").glob("catalogue-*/manifest.csv"), key=lambda p: p.stat().st_mtime)
+if runs:
+    with runs[-1].open(encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    print(f"{runs[-1]}  ({len(rows)} rows)")
+    flagged = [r for r in rows if r["status"] == "ok" and r["validation_ok"] != "True"]
+    print(f"  rendered : {sum(1 for r in rows if r['status'] == 'ok')}")
+    print(f"  flagged  : {len(flagged)}")
+    print(f"  failed   : {sum(1 for r in rows if r['status'] in ('failed', 'error'))}")
+    for row in flagged[:5]:
+        print(f"    {row['output']}: {row['findings']}")
+else:
+    print("No batch run found yet.")
 """
     ),
     code(

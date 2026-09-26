@@ -26,16 +26,23 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from PIL import Image
 
-from ai_trial_room.backends.base import (
-    NEGATIVE_PROMPT,
-    TryOnBackend,
-    TryOnRequest,
-    TryOnResult,
+from ai_trial_room.backends.base import TryOnBackend, TryOnRequest, TryOnResult
+from ai_trial_room.backends.prompts import (
+    DRAPE_SPECS,
+    build_negative_prompt,
+    build_prompt,
+    build_refine_prompt,
 )
-from ai_trial_room.backends.prompts import build_prompt
 from ai_trial_room.config import CONFIG, BackendId, Category
+from ai_trial_room.postprocessing.blend import feather_composite
+from ai_trial_room.preprocessing.regions import (
+    GarmentRegion,
+    derive_regions,
+    restrict_to_mask,
+)
 from ai_trial_room.utils.device import detect_hardware, resolve_quantization
 from ai_trial_room.utils.errors import ModelLoadError
 from ai_trial_room.utils.logging_setup import get_logger
@@ -190,10 +197,18 @@ class _EditBackendBase(TryOnBackend):
         return build_prompt(
             request.category,
             drape_style=request.options.drape_style,
+            dupatta_style=request.options.dupatta_style,
             dominant_shoulder=request.person.pose.dominant_shoulder,
             framing=request.person.framing,
             looks_unstitched=request.garment.looks_unstitched,
             extra=request.options.extra_prompt,
+        )
+
+    def _build_negative(self, request: TryOnRequest) -> str:
+        """Compose the layered negative prompt for this request."""
+        return build_negative_prompt(
+            request.category,
+            drape_style=request.options.drape_style,
         )
 
     def _pipeline_kwargs(self, request: TryOnRequest, prompt: str, seed: int) -> dict[str, Any]:
@@ -208,7 +223,7 @@ class _EditBackendBase(TryOnBackend):
         return {
             "image": [request.person.image, request.garment.image],
             "prompt": prompt,
-            "negative_prompt": NEGATIVE_PROMPT,
+            "negative_prompt": self._build_negative(request),
             "num_inference_steps": steps,
             "true_cfg_scale": true_cfg,
             "guidance_scale": options.guidance_scale or 1.0,
@@ -236,6 +251,10 @@ class _EditBackendBase(TryOnBackend):
         output = self._pipeline(**kwargs)
         image: Image.Image = output.images[0]
 
+        refined_regions: list[str] = []
+        if request.options.refine:
+            image, refined_regions = self._refine_regions(request, image, seed)
+
         return TryOnResult(
             image=image,
             backend_id=self.backend_id,
@@ -243,16 +262,172 @@ class _EditBackendBase(TryOnBackend):
             seed=seed,
             steps=steps,
             duration_s=0.0,  # filled in by TryOnBackend.generate
+            refined_regions=refined_regions,
             metadata={
                 "family": self.family,
                 "repo_id": self.spec.repo_id,
                 "quantization": resolve_quantization(CONFIG.runtime.quantize),
                 "drape_style": request.options.drape_style.value,
+                "dupatta_style": request.options.dupatta_style.value,
                 "framing": request.person.framing,
                 "dominant_shoulder": request.person.pose.dominant_shoulder,
                 "background_removed": request.garment.background_removed,
             },
         )
+
+    # -- refinement -------------------------------------------------------- #
+
+    #: Regions worth a second pass, in priority order. The pallu carries most of
+    #: a saree's design value, so it is refined first and alone by default.
+    _REFINE_PRIORITY: tuple[GarmentRegion, ...] = (GarmentRegion.PALLU,)
+
+    def _refine_regions(
+        self,
+        request: TryOnRequest,
+        image: Image.Image,
+        seed: int,
+    ) -> tuple[Image.Image, list[str]]:
+        """Run a short, focused second pass over high-value garment regions.
+
+        How it works, and why it works this way
+        ---------------------------------------
+        ``QwenImageEditPlusPipeline`` has no mask argument - it is an instruction
+        editor, not an inpainter. So we cannot ask it to touch only the pallu.
+
+        Instead: re-run the pipeline using the *first-pass output* as reference 1
+        (so the drape and pose are already established and only detail is at
+        stake), with a prompt that talks about nothing but the fabric detail of
+        one region, at fewer steps and lower guidance. Then composite only that
+        region back through its feathered mask. Everything outside the region is
+        bit-identical to the first pass.
+
+        That makes the pass safe: a bad refinement can only degrade the region it
+        was aimed at, never the face, background or silhouette.
+
+        Parameters
+        ----------
+        request:
+            The originating request, for pose, category and options.
+        image:
+            First-pass output.
+        seed:
+            Base seed. The refinement uses ``seed + 1`` so it explores a
+            different sample rather than reproducing the same detail.
+
+        Returns
+        -------
+        tuple
+            ``(image, refined_region_labels)``. On any failure the input image is
+            returned unchanged with an empty label list.
+        """
+        options = request.options
+        regions = derive_regions(
+            request.person.pose,
+            request.person.parse,
+            request.category,
+            drape_style=options.drape_style,
+            pallu_shoulder=DRAPE_SPECS[options.drape_style].shoulder
+            if request.category is Category.SAREE
+            else request.person.pose.dominant_shoulder,
+        )
+
+        refined: list[str] = []
+        current = image
+
+        for region in self._REFINE_PRIORITY:
+            mask = regions.get(region)
+            if mask is None or not regions.is_usable(region):
+                logger.info(
+                    "Skipping %s refinement (coverage %.2f%% too small).",
+                    region.value,
+                    regions.coverage(region) * 100,
+                )
+                continue
+
+            # Keep the geometric region inside what we were allowed to repaint,
+            # so refinement cannot leak onto the face or the background.
+            mask = restrict_to_mask(mask, request.person.inpaint_mask)
+
+            try:
+                current = self._refine_one(request, current, mask, region, seed)
+                refined.append(region.label)
+            except Exception as exc:  # noqa: BLE001 - refinement is optional polish
+                logger.warning(
+                    "Refinement of %s failed (%s); keeping the first pass.",
+                    region.value,
+                    exc,
+                )
+                break
+
+        return current, refined
+
+    def _refine_one(
+        self,
+        request: TryOnRequest,
+        image: Image.Image,
+        mask: Image.Image,
+        region: GarmentRegion,
+        seed: int,
+    ) -> Image.Image:
+        """Refine a single region and composite it back.
+
+        Parameters
+        ----------
+        request:
+            Originating request.
+        image:
+            Current image to improve.
+        mask:
+            Feathered ``L`` mask of the region.
+        region:
+            Which region is being refined, for the prompt and logs.
+        seed:
+            Base seed; ``seed + 1`` is used for this pass.
+
+        Returns
+        -------
+        Image.Image
+            The image with ``region`` replaced by the refined version.
+        """
+        import torch
+
+        options = request.options
+        steps = options.refine_steps or max(12, (options.steps or self.spec.default_steps) // 2)
+        prompt = build_refine_prompt(request.category, region.label, drape_style=options.drape_style)
+
+        request.progress(0.80, f"Refining {region.label}...")
+        logger.info("Refining %s: %d steps, strength %.2f", region.value, steps, options.refine_strength)
+
+        width, height = CONFIG.runtime.size
+        kwargs: dict[str, Any] = {
+            # Reference 1 is the first-pass result, not the original photo: the
+            # drape is already correct and only detail is being improved.
+            "image": [image, request.garment.image],
+            "prompt": prompt,
+            "negative_prompt": self._build_negative(request),
+            "num_inference_steps": steps,
+            "true_cfg_scale": max(1.5, (options.true_cfg_scale or self.spec.default_true_cfg) - 1.0),
+            "guidance_scale": 1.0,
+            "width": width,
+            "height": height,
+            "num_images_per_prompt": 1,
+            "generator": torch.Generator(device="cpu").manual_seed(seed + 1),
+        }
+        if self.backend_id is BackendId.FLUX_KLEIN:
+            kwargs.pop("negative_prompt", None)
+            kwargs.pop("true_cfg_scale", None)
+
+        assert self._pipeline is not None
+        refined_full: Image.Image = self._pipeline(**kwargs).images[0]
+
+        # Scale the mask by refine_strength so the pass blends in rather than
+        # fully replacing the region - this is the knob that keeps it subtle.
+        strength = min(max(options.refine_strength, 0.0), 1.0)
+        scaled = Image.fromarray(
+            (np.asarray(mask.convert("L"), dtype=np.float32) * strength).astype(np.uint8),
+            mode="L",
+        )
+        return feather_composite(refined_full, image, scaled, sigma=4.0)
 
 
 def _make_step_callback(request: TryOnRequest, total_steps: int) -> Any | None:

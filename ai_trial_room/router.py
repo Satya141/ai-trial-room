@@ -17,7 +17,7 @@ owns the whole flow: preprocess, select, generate, postprocess.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +33,9 @@ from ai_trial_room.backends.base import (
 )
 from ai_trial_room.backends.registry import available_backends, get_backend
 from ai_trial_room.config import CONFIG, MODEL_SPECS, BackendId, Category, LicenseClass
-from ai_trial_room.postprocessing.blend import harmonize
+from ai_trial_room.postprocessing.blend import harmonize, sharpen_garment_region
 from ai_trial_room.postprocessing.face_preserve import restore_face
+from ai_trial_room.postprocessing.validate import ValidationReport, validate_result
 from ai_trial_room.preprocessing.garment import GarmentAssets, prepare_garment
 from ai_trial_room.preprocessing.person import PersonAssets, prepare_person
 from ai_trial_room.utils.errors import ConsentNotGivenError, LicenseRestrictedError
@@ -55,6 +56,8 @@ class TryOnReport:
     final_image: Image.Image
     #: Wall-clock seconds for each stage, for the "why is it slow" question.
     timings: dict[str, float]
+    #: Post-generation quality findings, surfaced in the UI and batch manifest.
+    validation: ValidationReport = field(default_factory=ValidationReport)
 
     @property
     def before(self) -> Image.Image:
@@ -69,17 +72,28 @@ class TryOnReport:
     def caption(self) -> str:
         """Markdown provenance line shown beneath the output."""
         spec = MODEL_SPECS[self.result.backend_id]
-        warning = ""
-        if spec.license_class is LicenseClass.NON_COMMERCIAL:
-            warning = "  \n⚠️ **Non-commercial model** - this output may not be sold."
         total = sum(self.timings.values())
-        return (
-            f"{self.result.summary()}  \n"
-            f"Stages: "
+
+        lines = [
+            self.result.summary(),
+            "Stages: "
             + " · ".join(f"{name} {value:.1f}s" for name, value in self.timings.items())
-            + f" · **total {total:.1f}s**"
-            + warning
-        )
+            + f" · **total {total:.1f}s**",
+        ]
+
+        if spec.license_class is LicenseClass.NON_COMMERCIAL:
+            lines.append("⚠️ **Non-commercial model** - this output may not be sold.")
+
+        rendered = self.validation.render()
+        if rendered:
+            heading = (
+                "**Looks good, with notes:**"
+                if self.validation.ok
+                else "**Check this result:**"
+            )
+            lines.append(f"{heading}\n{rendered}")
+
+        return "  \n".join(lines)
 
 
 def select_backend(
@@ -225,21 +239,40 @@ def run_try_on(
     started = time.perf_counter()
     image = result.image
 
+    # Order matters. Sharpen the fabric first, while the mask still describes
+    # only generated pixels. Then harmonize globally. Then blend the face last,
+    # so nothing afterwards can soften or recolour the customer's likeness.
+    if options.sharpen > 0:
+        image = sharpen_garment_region(image, person.inpaint_mask, amount=options.sharpen)
     if options.harmonize_colors:
         image = harmonize(image, person.image)
     if options.preserve_face:
         image = restore_face(image, person)
 
+    timings["postprocess"] = time.perf_counter() - started
+
+    # --- 5. Validate ------------------------------------------------------ #
+    progress(0.97, "Checking the result...")
+    started = time.perf_counter()
+    validation = validate_result(
+        image,
+        person.image,
+        person.inpaint_mask,
+        category,
+        person.framing,
+    )
+    timings["validate"] = time.perf_counter() - started
+
     # Return at the resolution the customer uploaded, with EXIF stripped so a
     # downloaded file cannot leak GPS coordinates from the original photo.
     final_image = scrub_metadata(unletterbox(image, person.letterbox_info))
-    timings["postprocess"] = time.perf_counter() - started
 
     progress(1.0, "Done")
     logger.info(
-        "Try-on complete for %s in %.1fs total",
+        "Try-on complete for %s in %.1fs total (%d finding(s))",
         category.value,
         sum(timings.values()),
+        len(validation.findings),
     )
 
     return TryOnReport(
@@ -248,6 +281,7 @@ def run_try_on(
         garment=garment,
         final_image=final_image,
         timings=timings,
+        validation=validation,
     )
 
 

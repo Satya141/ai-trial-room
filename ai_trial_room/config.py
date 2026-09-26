@@ -136,6 +136,130 @@ _DRAPE_LABELS: Final[dict[DrapeStyle, str]] = {
 }
 
 
+class DupattaStyle(str, Enum):
+    """How a lehenga's dupatta is carried.
+
+    Shops care about this: the same lehenga photographs very differently with a
+    dupatta over one shoulder versus spread across both, and customers ask for a
+    specific look.
+    """
+
+    SINGLE_SHOULDER = "single_shoulder"
+    BOTH_SHOULDERS = "both_shoulders"
+    OVER_HEAD = "over_head"
+    ARM_DRAPE = "arm_drape"
+
+    @property
+    def label(self) -> str:
+        """Human-readable label for the Gradio dropdown."""
+        return _DUPATTA_LABELS[self]
+
+    @classmethod
+    def from_label(cls, label: str) -> DupattaStyle:
+        """Resolve a UI label back to a :class:`DupattaStyle`."""
+        for style in cls:
+            if style.label == label.strip():
+                return style
+        key = label.strip().lower().replace(" ", "_").replace("-", "_")
+        try:
+            return cls(key)
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Unknown dupatta style {label!r}") from exc
+
+
+_DUPATTA_LABELS: Final[dict[DupattaStyle, str]] = {
+    DupattaStyle.SINGLE_SHOULDER: "Over one shoulder (classic)",
+    DupattaStyle.BOTH_SHOULDERS: "Over both shoulders",
+    DupattaStyle.OVER_HEAD: "Over the head (bridal)",
+    DupattaStyle.ARM_DRAPE: "Draped across the forearms",
+}
+
+
+class QualityPreset(str, Enum):
+    """Speed / quality trade-offs exposed as a single choice.
+
+    A salesperson should not have to reason about inference steps. They pick
+    Fast, Balanced or Best, and :meth:`settings` expands that into the sampler
+    and refinement configuration.
+    """
+
+    FAST = "fast"
+    BALANCED = "balanced"
+    BEST = "best"
+
+    @property
+    def label(self) -> str:
+        """Human-readable label for the Gradio radio group."""
+        return _PRESET_LABELS[self]
+
+    @classmethod
+    def from_label(cls, label: str) -> QualityPreset:
+        """Resolve a UI label back to a :class:`QualityPreset`."""
+        for preset in cls:
+            if preset.label == label.strip():
+                return preset
+        key = label.strip().lower().split(" ")[0]
+        try:
+            return cls(key)
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Unknown quality preset {label!r}") from exc
+
+    def settings(self) -> "PresetSettings":
+        """Expand this preset into concrete generation settings."""
+        return _PRESET_SETTINGS[self]
+
+
+_PRESET_LABELS: Final[dict[QualityPreset, str]] = {
+    QualityPreset.FAST: "Fast (~1 min)",
+    QualityPreset.BALANCED: "Balanced (~2 min)",
+    QualityPreset.BEST: "Best (~4 min)",
+}
+
+
+@dataclass(frozen=True)
+class PresetSettings:
+    """Concrete sampler and refinement settings behind a quality preset.
+
+    Attributes
+    ----------
+    steps:
+        Inference steps for the first pass.
+    true_cfg:
+        True CFG scale for the first pass.
+    refine:
+        Whether to run the region-targeted second pass.
+    refine_steps:
+        Inference steps for the refinement pass, when enabled.
+    refine_strength:
+        How much the refinement pass is allowed to change the region, 0-1.
+    sharpen:
+        Unsharp amount applied inside the garment region, 0 disables.
+    """
+
+    steps: int
+    true_cfg: float
+    refine: bool
+    refine_steps: int
+    refine_strength: float
+    sharpen: float
+
+
+_PRESET_SETTINGS: Final[dict[QualityPreset, PresetSettings]] = {
+    QualityPreset.FAST: PresetSettings(
+        steps=20, true_cfg=3.5, refine=False, refine_steps=0,
+        refine_strength=0.0, sharpen=0.25,
+    ),
+    QualityPreset.BALANCED: PresetSettings(
+        steps=30, true_cfg=4.0, refine=False, refine_steps=0,
+        refine_strength=0.0, sharpen=0.35,
+    ),
+    QualityPreset.BEST: PresetSettings(
+        steps=40, true_cfg=4.0, refine=True, refine_steps=24,
+        refine_strength=0.45, sharpen=0.40,
+    ),
+}
+
+
 class LicenseClass(str, Enum):
     """Coarse license buckets used to gate backends."""
 
@@ -312,6 +436,55 @@ class PreprocessConfig:
 
 
 @dataclass
+class IdentityConfig:
+    """Identity-preservation strength and safety limits.
+
+    Phase 2 replaces the single feathered paste with Laplacian pyramid blending,
+    which matches low-frequency lighting to the generated image while keeping the
+    original's high-frequency facial detail. That removes the visible patch edge
+    the simple composite could leave under strong relighting.
+    """
+
+    #: Blend opacity, 0-1. Below ~0.6 the model's drift starts showing through.
+    strength: float = field(default_factory=lambda: _env_float("AITR_IDENTITY_STRENGTH", 0.92))
+    #: Use Laplacian pyramid blending rather than a straight alpha composite.
+    laplacian: bool = field(default_factory=lambda: _env_bool("AITR_IDENTITY_LAPLACIAN", True))
+    #: Pyramid depth. 5 levels handles a face from ~64 to ~1024 px wide.
+    pyramid_levels: int = field(default_factory=lambda: _env_int("AITR_IDENTITY_LEVELS", 5))
+    #: Match the original face's colour to the generated frame before blending,
+    #: so a warm-relit result does not get a cool-toned face pasted into it.
+    match_skin_tone: bool = field(
+        default_factory=lambda: _env_bool("AITR_MATCH_SKIN_TONE", True)
+    )
+    #: Reject the blend when the face centroid drifts more than this fraction of
+    #: face width - a pasted face on a moved head looks far worse than drift.
+    max_drift_ratio: float = field(
+        default_factory=lambda: _env_float("AITR_MAX_FACE_DRIFT", 0.35)
+    )
+
+
+@dataclass
+class ValidationConfig:
+    """Thresholds for post-generation quality checks.
+
+    These produce *warnings*, never failures. A shop would rather see a flagged
+    result and decide for themselves than be told to try again.
+    """
+
+    enabled: bool = field(default_factory=lambda: _env_bool("AITR_VALIDATE", True))
+    #: Warn when the background changed more than this mean absolute difference
+    #: (0-255) outside the garment region.
+    max_background_drift: float = 18.0
+    #: Warn when the garment covers less than this fraction of the mask area -
+    #: usually means the model ignored the instruction.
+    min_garment_coverage: float = 0.35
+    #: Warn when output mean brightness differs from the source by more than this.
+    max_exposure_drift: float = 42.0
+    #: Warn when no face can be found in the output at all.
+    require_face: bool = True
+
+
+@dataclass
 class PrivacyConfig:
     """Privacy guarantees surfaced in the UI and enforced in code."""
 
@@ -333,7 +506,18 @@ class AppConfig:
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     preprocess: PreprocessConfig = field(default_factory=PreprocessConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
+    identity: IdentityConfig = field(default_factory=IdentityConfig)
+    validation: ValidationConfig = field(default_factory=ValidationConfig)
 
+    #: Quality preset used when the caller does not specify one.
+    default_preset: QualityPreset = field(
+        default_factory=lambda: QualityPreset(
+            os.environ.get("AITR_PRESET", QualityPreset.BALANCED.value).lower()
+        )
+        if os.environ.get("AITR_PRESET", "balanced").lower()
+        in {p.value for p in QualityPreset}
+        else QualityPreset.BALANCED
+    )
     #: Default backend for every category unless overridden.
     default_backend: BackendId = BackendId.QWEN_EDIT
     #: Allow research-licensed backends to load. Never enable in production.

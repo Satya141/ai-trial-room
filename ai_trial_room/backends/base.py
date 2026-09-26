@@ -33,9 +33,12 @@ from ai_trial_room.config import (
     BackendId,
     Category,
     DrapeStyle,
+    DupattaStyle,
     LicenseClass,
     ModelSpec,
+    QualityPreset,
 )
+from ai_trial_room.backends.prompts import BASE_NEGATIVE
 from ai_trial_room.preprocessing.garment import GarmentAssets
 from ai_trial_room.preprocessing.person import PersonAssets
 from ai_trial_room.utils.device import (
@@ -82,12 +85,55 @@ class TryOnOptions:
     #: ``-1`` (or ``None``) requests a fresh random seed each run.
     seed: int | None = None
     drape_style: DrapeStyle = DrapeStyle.NIVI
+    dupatta_style: DupattaStyle = DupattaStyle.SINGLE_SHOULDER
     #: Extra instruction appended to the generated prompt.
     extra_prompt: str = ""
-    #: Blend the original face back in after generation (Phase 2).
+    #: Blend the original face back in after generation.
     preserve_face: bool = True
-    #: Match output colour/lighting to the source photo (Phase 2).
+    #: Match output colour/lighting to the source photo.
     harmonize_colors: bool = True
+
+    # --- Phase 2: region-targeted refinement ------------------------------ #
+    #: Run a second, shorter pass over the pallu / dupatta region.
+    refine: bool = False
+    #: Steps for the refinement pass. ``None`` uses the preset's value.
+    refine_steps: int | None = None
+    #: How much the refinement pass may change the region, 0-1.
+    refine_strength: float = 0.45
+    #: Unsharp amount applied inside the garment region, 0 disables.
+    sharpen: float = 0.35
+
+    @classmethod
+    def from_preset(cls, preset: QualityPreset, **overrides: Any) -> "TryOnOptions":
+        """Build options from a :class:`QualityPreset`, with optional overrides.
+
+        This is how the UI turns "Best" into concrete settings, so a salesperson
+        never has to reason about step counts.
+
+        Parameters
+        ----------
+        preset:
+            The quality preset to expand.
+        **overrides:
+            Any field to override after expansion.
+
+        Returns
+        -------
+        TryOnOptions
+        """
+        settings = preset.settings()
+        base = cls(
+            steps=settings.steps,
+            true_cfg_scale=settings.true_cfg,
+            refine=settings.refine,
+            refine_steps=settings.refine_steps or None,
+            refine_strength=settings.refine_strength,
+            sharpen=settings.sharpen,
+        )
+        for key, value in overrides.items():
+            if value is not None and hasattr(base, key):
+                setattr(base, key, value)
+        return base
 
     def resolved_seed(self) -> int:
         """Return a concrete seed, generating one when unset or negative."""
@@ -119,6 +165,8 @@ class TryOnResult:
     duration_s: float
     #: Free-form extras: intermediate masks, warp previews, timings.
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: Which sub-regions were refined in a second pass, if any.
+    refined_regions: list[str] = field(default_factory=list)
 
     @property
     def spec(self) -> ModelSpec:
@@ -127,9 +175,12 @@ class TryOnResult:
 
     def summary(self) -> str:
         """Markdown caption shown under the output image."""
+        refined = (
+            f" · refined {', '.join(self.refined_regions)}" if self.refined_regions else ""
+        )
         return (
             f"**{self.spec.repo_id}** · {self.steps} steps · seed `{self.seed}` · "
-            f"{self.duration_s:.1f}s · license {self.spec.license_name}"
+            f"{self.duration_s:.1f}s{refined} · license {self.spec.license_name}"
         )
 
 
@@ -385,10 +436,6 @@ def _try_call(obj: Any, method: str, *args: Any) -> bool:
         return False
 
 
-#: Default negative prompt shared by the editing backends.
-NEGATIVE_PROMPT: Final[str] = (
-    "different face, different person, changed facial features, distorted face, "
-    "extra limbs, extra arms, missing limbs, deformed hands, fused fingers, "
-    "changed body proportions, changed background, blurry, low resolution, "
-    "watermark, text, logo, oversaturated, plastic skin, cartoon, 3d render"
-)
+#: Kept as a re-export: the real, layered negative prompts are built per
+#: category and drape by :func:`ai_trial_room.backends.prompts.build_negative_prompt`.
+NEGATIVE_PROMPT: Final[str] = BASE_NEGATIVE

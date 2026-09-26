@@ -44,6 +44,8 @@ from ai_trial_room.config import (
     BackendId,
     Category,
     DrapeStyle,
+    DupattaStyle,
+    QualityPreset,
 )
 from ai_trial_room.router import describe_routing, run_try_on
 from ai_trial_room.utils.device import detect_hardware, vram_report
@@ -59,6 +61,8 @@ logger = get_logger(__name__)
 
 CATEGORY_CHOICES = [category.label for category in Category]
 DRAPE_CHOICES = [style.label for style in DrapeStyle]
+DUPATTA_CHOICES = [style.label for style in DupattaStyle]
+PRESET_CHOICES = [preset.label for preset in QualityPreset]
 
 THEME = gr.themes.Soft(
     primary_hue=gr.themes.colors.rose,
@@ -85,8 +89,11 @@ footer { display: none !important; }
 # --------------------------------------------------------------------------- #
 
 
-def on_category_change(category_label: str) -> Any:
-    """Show the drape-style dropdown only for sarees.
+def on_category_change(category_label: str) -> tuple[Any, Any, Any]:
+    """Show the style controls relevant to the chosen category.
+
+    Saree gets a drape-style dropdown, lehenga gets a dupatta-style dropdown, and
+    both draped categories get a full-length-photo reminder.
 
     Parameters
     ----------
@@ -95,14 +102,33 @@ def on_category_change(category_label: str) -> Any:
 
     Returns
     -------
-    gr.update
-        Visibility update for the drape dropdown.
+    tuple
+        Visibility updates for ``(drape, dupatta, framing_hint)``.
     """
     try:
         category = Category.from_label(category_label)
     except ValueError:
-        return gr.update(visible=False)
-    return gr.update(visible=category is Category.SAREE)
+        return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+
+    return (
+        gr.update(visible=category is Category.SAREE),
+        gr.update(visible=category is Category.LEHENGA),
+        gr.update(visible=category.is_draped),
+    )
+
+
+def on_preset_change(preset_label: str) -> Any:
+    """Sync the refine checkbox to the chosen preset.
+
+    Refinement is what makes "Best" slower, so the checkbox should reflect the
+    preset rather than silently disagreeing with it. The user can still override
+    it afterwards.
+    """
+    try:
+        preset = QualityPreset.from_label(preset_label)
+    except ValueError:
+        return gr.update()
+    return gr.update(value=preset.settings().refine)
 
 
 def on_consent_change(consented: bool) -> Any:
@@ -121,12 +147,17 @@ def generate(
     garment_image: Image.Image | None,
     category_label: str,
     drape_label: str,
+    dupatta_label: str,
+    preset_label: str,
     backend_label: str,
     steps: int,
     true_cfg: float,
     seed: int,
     preserve_face: bool,
+    identity_strength: float,
     harmonize_colors: bool,
+    refine: bool,
+    sharpen: float,
     extra_prompt: str,
     consent: bool,
     progress: gr.Progress = gr.Progress(),
@@ -140,12 +171,14 @@ def generate(
     ----------
     person_image, garment_image:
         Uploads from the two image components.
-    category_label, drape_label, backend_label:
-        Dropdown selections (UI labels, not enum values).
+    category_label, drape_label, dupatta_label, preset_label, backend_label:
+        Dropdown and radio selections (UI labels, not enum values).
     steps, true_cfg, seed:
-        Advanced sampler settings.
-    preserve_face, harmonize_colors:
-        Postprocessing toggles.
+        Advanced sampler settings. ``steps`` of 0 means "use the preset".
+    preserve_face, identity_strength, harmonize_colors:
+        Identity and colour postprocessing controls.
+    refine, sharpen:
+        Region-refinement pass and garment sharpening amount.
     extra_prompt:
         Optional free-text instruction appended to the generated prompt.
     consent:
@@ -171,24 +204,36 @@ def generate(
         try:
             category = Category.from_label(category_label)
             drape_style = DrapeStyle.from_label(drape_label)
+            dupatta_style = DupattaStyle.from_label(dupatta_label)
+            preset = QualityPreset.from_label(preset_label)
         except ValueError as exc:
             raise InvalidInputError(
-                "That category or drape style is not recognised. Please pick one "
+                "That category or style option is not recognised. Please pick one "
                 "from the dropdowns.",
                 detail=str(exc),
             ) from exc
 
         backend_id = _resolve_backend_label(backend_label)
 
-        options = TryOnOptions(
-            steps=int(steps),
-            true_cfg_scale=float(true_cfg),
+        # The preset supplies the baseline; Advanced settings override it. A
+        # steps value of 0 means "leave the preset alone".
+        options = TryOnOptions.from_preset(
+            preset,
+            steps=int(steps) or None,
+            true_cfg_scale=float(true_cfg) or None,
             seed=int(seed),
             drape_style=drape_style,
+            dupatta_style=dupatta_style,
             extra_prompt=extra_prompt or "",
             preserve_face=bool(preserve_face),
             harmonize_colors=bool(harmonize_colors),
+            refine=bool(refine),
+            sharpen=float(sharpen),
         )
+
+        # Identity strength is global config rather than per-request, so apply it
+        # here for this generation.
+        CONFIG.identity.strength = float(identity_strength)
 
         report(0.01, "Starting...")
         report_obj = run_try_on(
@@ -340,10 +385,11 @@ def build_ui() -> gr.Blocks:
                         sources=["upload", "clipboard"],
                     )
 
-                gr.Markdown(
+                framing_hint = gr.Markdown(
                     "**Tip:** for sarees and lehengas use a full-length photo "
                     "(head to at least the knees), standing, facing the camera.",
                     elem_classes=["aitr-notice"],
+                    visible=True,
                 )
 
                 with gr.Row():
@@ -360,6 +406,21 @@ def build_ui() -> gr.Blocks:
                         visible=True,
                         scale=1,
                     )
+                    dupatta_input = gr.Dropdown(
+                        DUPATTA_CHOICES,
+                        value=DupattaStyle.SINGLE_SHOULDER.label,
+                        label="Dupatta style",
+                        visible=False,
+                        scale=1,
+                    )
+
+                preset_input = gr.Radio(
+                    PRESET_CHOICES,
+                    value=CONFIG.default_preset.label,
+                    label="4. Quality",
+                    info="Best adds a second pass over the pallu / dupatta for "
+                    "sharper border and zari detail.",
+                )
 
                 consent_input = gr.Checkbox(
                     label=CONSENT_TEXT,
@@ -383,15 +444,16 @@ def build_ui() -> gr.Blocks:
                         "supports your chosen category.",
                     )
                     steps_input = gr.Slider(
-                        10, 60, value=runtime.default_steps, step=1,
+                        0, 60, value=0, step=1,
                         label="Inference steps",
-                        info="More steps = finer fabric detail, slower generation.",
+                        info="0 = use the Quality preset. Higher = finer fabric "
+                        "detail, slower generation.",
                     )
                     cfg_input = gr.Slider(
-                        1.0, 8.0, value=runtime.default_true_cfg, step=0.1,
+                        0.0, 8.0, value=0.0, step=0.1,
                         label="Guidance scale (true CFG)",
-                        info="Higher follows the prompt more strictly; above ~6 "
-                        "starts to look over-processed.",
+                        info="0 = use the Quality preset. Above ~6 starts to look "
+                        "over-processed.",
                     )
                     seed_input = gr.Number(
                         value=-1, precision=0, label="Seed",
@@ -404,6 +466,21 @@ def build_ui() -> gr.Blocks:
                         )
                         harmonize_input = gr.Checkbox(
                             value=True, label="Match colour & lighting",
+                        )
+                    identity_input = gr.Slider(
+                        0.5, 1.0, value=CONFIG.identity.strength, step=0.01,
+                        label="Identity strength",
+                        info="How strongly the original face is preserved. Lower "
+                        "lets more of the generated lighting through.",
+                    )
+                    with gr.Row():
+                        refine_input = gr.Checkbox(
+                            value=False,
+                            label="Refine pallu / dupatta (slower)",
+                        )
+                        sharpen_input = gr.Slider(
+                            0.0, 0.8, value=0.35, step=0.05,
+                            label="Garment sharpening",
                         )
                     extra_input = gr.Textbox(
                         label="Extra instruction (optional)",
@@ -466,7 +543,12 @@ def build_ui() -> gr.Blocks:
             )
 
         # ---------------- Wiring ---------------- #
-        category_input.change(on_category_change, category_input, drape_input)
+        category_input.change(
+            on_category_change,
+            inputs=category_input,
+            outputs=[drape_input, dupatta_input, framing_hint],
+        )
+        preset_input.change(on_preset_change, preset_input, refine_input)
         consent_input.change(on_consent_change, consent_input, generate_button)
         free_button.click(free_memory, outputs=memory_status)
 
@@ -474,8 +556,10 @@ def build_ui() -> gr.Blocks:
             generate,
             inputs=[
                 person_input, garment_input, category_input, drape_input,
-                backend_input, steps_input, cfg_input, seed_input,
-                face_input, harmonize_input, extra_input, consent_input,
+                dupatta_input, preset_input, backend_input, steps_input,
+                cfg_input, seed_input, face_input, identity_input,
+                harmonize_input, refine_input, sharpen_input, extra_input,
+                consent_input,
             ],
             outputs=[result_output, comparison_output, download_output, status_output],
             concurrency_limit=1,  # one heavy generation at a time per GPU

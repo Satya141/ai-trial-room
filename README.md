@@ -98,12 +98,15 @@ flowchart TD
         B1["edit_backend.py<br/><b>Qwen-Image-Edit-2511</b><br/>Apache-2.0 ✅"]
         B2["edit_backend.py<br/>FLUX.2-klein-4B<br/>Apache-2.0 ✅"]
         B3["vton_backend.py<br/>CatVTON<br/>CC BY-NC-SA ⚠️ gated"]
-        B4["prompts.py<br/>drape templates"]
+        B4["prompts.py<br/>drape templates +<br/>per-drape negatives"]
+        B5["2nd pass: pallu refine<br/>regions.py masks"]
     end
 
     subgraph POST["postprocessing/"]
-        O1["face_preserve.py<br/>FaceMesh hull → feather → composite"]
+        O0["blend.py<br/>sharpen garment region"]
         O2["blend.py<br/>LAB statistics match"]
+        O1["face_preserve.py<br/>FaceMesh hull → tone match<br/>→ Laplacian blend"]
+        O3["validate.py<br/>background / garment /<br/>exposure / face checks"]
     end
 
     U1 --> P1
@@ -121,10 +124,12 @@ flowchart TD
     R3 -.->|opt-in only| B3
     B4 --> B1
     B4 --> B2
+    B1 -->|"preset = Best"| B5
+    B5 -->|composite region only| O0
 
-    B1 --> O2 --> O1 --> F["unletterbox → strip EXIF → download"]
-    B2 --> O2
-    B3 --> O2
+    B1 --> O0 --> O2 --> O1 --> O3 --> F["unletterbox → strip EXIF → download"]
+    B2 --> O0
+    B3 --> O0
 ```
 
 ### Module map
@@ -134,17 +139,19 @@ flowchart TD
 | [`config.py`](ai_trial_room/config.py) | Every setting, all env-overridable. Model specs with licence class. |
 | [`preprocessing/person.py`](ai_trial_room/preprocessing/person.py) | Letterbox, MediaPipe pose, SegFormer parsing, per-category inpaint mask. |
 | [`preprocessing/garment.py`](ai_trial_room/preprocessing/garment.py) | rembg background removal, alpha trim, centre, resize. |
-| [`backends/base.py`](ai_trial_room/backends/base.py) | `TryOnBackend` ABC. Lazy load, licence gate, OOM translation, memory savers. |
-| [`backends/prompts.py`](ai_trial_room/backends/prompts.py) | Drape-specific prompt templates. **The Indian-wear specialisation lives here.** |
-| [`backends/edit_backend.py`](ai_trial_room/backends/edit_backend.py) | Qwen-Image-Edit + FLUX.2 klein. Nunchaku INT4, FP8 casting. |
+| [`preprocessing/regions.py`](ai_trial_room/preprocessing/regions.py) | Pallu / pleat / blouse / skirt sub-region masks from pose geometry. |
+| [`backends/base.py`](ai_trial_room/backends/base.py) | `TryOnBackend` ABC. Lazy load, licence gate, OOM translation, memory savers, quality presets. |
+| [`backends/prompts.py`](ai_trial_room/backends/prompts.py) | Drape templates + per-drape negative prompts. **The Indian-wear specialisation lives here.** |
+| [`backends/edit_backend.py`](ai_trial_room/backends/edit_backend.py) | Qwen-Image-Edit + FLUX.2 klein. Nunchaku INT4, FP8, region refinement pass. |
 | [`backends/vton_backend.py`](ai_trial_room/backends/vton_backend.py) | CatVTON, research-gated. |
 | [`backends/registry.py`](ai_trial_room/backends/registry.py) | LRU eviction so two heavy models never co-reside. |
 | [`router.py`](ai_trial_room/router.py) | Backend selection + the end-to-end pipeline. |
-| [`postprocessing/face_preserve.py`](ai_trial_room/postprocessing/face_preserve.py) | FaceMesh hull → feathered composite, with drift guard. |
-| [`postprocessing/blend.py`](ai_trial_room/postprocessing/blend.py) | LAB colour/lighting match, selective sharpening. |
+| [`postprocessing/face_preserve.py`](ai_trial_room/postprocessing/face_preserve.py) | FaceMesh hull → tone match → Laplacian blend, with drift guard. |
+| [`postprocessing/blend.py`](ai_trial_room/postprocessing/blend.py) | LAB colour match, Laplacian pyramid blending, selective sharpening. |
+| [`postprocessing/validate.py`](ai_trial_room/postprocessing/validate.py) | Output quality checks that flag results needing a human look. |
 | [`app.py`](app.py) | Gradio UI. |
 
-### Two design decisions worth calling out
+### Design decisions worth calling out
 
 **Letterbox, never crop.** Cropping a portrait photo to a fixed aspect ratio
 cuts off the hem of a saree or lehenga — exactly the part the customer is buying.
@@ -157,6 +164,29 @@ mask leaves denim showing under the drape.
 [`_draped_extension_mask`](ai_trial_room/preprocessing/person.py) adds a
 trapezoid flaring from the hips to the bottom of the frame. This is covered by
 `test_saree_mask_covers_legs_but_kurti_mask_does_not`.
+
+**Negative prompts name the specific wrong drape, not generic quality terms.**
+Piling on "ugly, bad anatomy, worst quality" does almost nothing. What works is
+naming the exact thing the model collapses into: a Gujarati *seedha pallu*
+negative says `pallu over the left shoulder, pallu hanging down the back`,
+because that is the Nivi drape it defaults to. Nauvari's says `straight skirt,
+legs joined together under the fabric`, because a dhoti-style drape is the one
+it cannot do. See [`build_negative_prompt`](ai_trial_room/backends/prompts.py).
+
+**The pallu is a band, not a panel.** The refinement mask runs along the
+shoulder-to-opposite-hip axis at roughly a third of torso width
+([`_pallu_polygon`](ai_trial_room/preprocessing/regions.py)). A mask covering
+the whole chest would let the second denoise pass alter the blouse and the
+silhouette — the two things refinement must never touch.
+
+**Identity blending is a Laplacian pyramid, not an alpha composite.** A plain
+feathered paste blends every spatial frequency at the same rate, so the wide
+feather needed to hide the seam also cross-fades facial detail, while a narrow
+feather leaves a visible patch edge — and there *will* be an edge, because the
+model relit the person. A Laplacian blend cross-fades lighting gradually while
+switching fine detail sharply, so the face stays crisp and the join disappears.
+`test_laplacian_blend_preserves_high_frequency_detail` pins this: reconstruction
+error through a full mask is 0.00/255.
 
 ---
 
@@ -247,10 +277,42 @@ export ALLOW_NONCOMMERCIAL=1
 ### Web UI
 
 1. Upload a person photo and a garment photo.
-2. Pick a category. For **Saree**, a drape-style dropdown appears.
-3. Tick the consent checkbox — the Generate button stays disabled until you do.
-4. Generate. Results appear as a single image and as a before/after strip, with
-   a download button.
+2. Pick a category. **Saree** reveals a drape-style dropdown, **Lehenga** a
+   dupatta-style dropdown.
+3. Pick a quality preset — **Fast**, **Balanced** or **Best**. A salesperson
+   never has to think about step counts.
+4. Tick the consent checkbox — the Generate button stays disabled until you do.
+5. Generate. Results appear as a single image and as a before/after strip, with a
+   download button and any quality warnings.
+
+#### Quality presets
+
+| Preset | Steps | Refines pallu | Typical T4 time |
+|---|---|---|---|
+| Fast | 20 | no | ~1 min |
+| Balanced | 30 | no | ~2 min |
+| Best | 40 | **yes** (+24 steps) | ~4 min |
+
+**Best** runs a second, region-targeted pass over the pallu / dupatta. Because
+`QwenImageEditPlusPipeline` takes no mask, that pass re-runs the model using the
+*first-pass output* as reference 1 with a detail-only prompt, then composites
+**only** the pallu band back through its feathered mask. Everything outside the
+band is bit-identical to the first pass, so a bad refinement can only degrade the
+region it aimed at — never the face, background or silhouette.
+
+#### Quality warnings
+
+Every result is checked and flagged rather than silently shipped:
+
+| Code | Means |
+|---|---|
+| `garment_unchanged` | The model ignored the garment — the worst failure, because it looks like success |
+| `background_drift` | The backdrop was repainted too |
+| `exposure_drift` | The result is much brighter or darker than the source |
+| `face_missing` | No face detectable in the output |
+| `partial_framing` | *Info only* — lower drape inferred because the photo is not full length |
+
+Nothing is ever rejected. A flagged image an operator can judge beats a refusal.
 
 ### Python API
 
@@ -259,12 +321,14 @@ from ai_trial_room.backends.base import TryOnOptions
 from ai_trial_room.config import Category, DrapeStyle
 from ai_trial_room.router import run_try_on
 
+from ai_trial_room.config import QualityPreset
+
 report = run_try_on(
     "customer.jpg",
     "saree_catalogue_0421.jpg",
     Category.SAREE,
-    options=TryOnOptions(
-        steps=40,
+    options=TryOnOptions.from_preset(
+        QualityPreset.BEST,          # 40 steps + pallu refinement
         drape_style=DrapeStyle.GUJARATI,
         seed=12345,
     ),
@@ -272,8 +336,47 @@ report = run_try_on(
 )
 
 report.after.save("result.png")
-print(report.caption())    # model, seed, per-stage timings, licence
+print(report.caption())              # model, seed, timings, licence, warnings
+
+if not report.validation.ok:
+    for finding in report.validation.warnings:
+        print(f"{finding.code}: {finding.message}")
 ```
+
+### Catalogue batch mode
+
+The feature a shop actually buys: one model photo, a folder of garments, every
+combination rendered overnight.
+
+```bash
+python scripts/batch_catalogue.py --person models/priya.jpg --garments catalogue/sarees --category saree
+```
+
+All four drapes for every saree, for a lookbook:
+
+```bash
+python scripts/batch_catalogue.py --person models/priya.jpg --garments catalogue/sarees --category saree --all-drapes --preset best
+```
+
+Check the job count before committing a GPU night to it:
+
+```bash
+python scripts/batch_catalogue.py --persons models/ --garments catalogue/sarees --category saree --dry-run
+```
+
+Outputs, under `outputs/catalogue-<category>-<timestamp>/`:
+
+| Path | Contents |
+|---|---|
+| `images/<person>__<garment>__<drape>.jpg` | One render per combination |
+| `manifest.csv` | Row per job: inputs, settings, seed, timings, **validation findings** |
+| `contact_sheet_NN.jpg` | Thumbnail grids for quick review |
+
+`manifest.csv` is what makes a 400-image run reviewable — sort by
+`validation_ok` and look only at what got flagged. A single bad photo never kills
+the run: it is recorded as `failed` and the batch continues. `--resume` skips
+outputs that already exist, so an interrupted overnight run picks up where it
+stopped.
 
 ### Comparison grids (for a LinkedIn post)
 
@@ -312,6 +415,12 @@ environment-overridable.
 | `AITR_MAX_RESIDENT_BACKENDS` | `1` | Heavy models allowed in VRAM at once. |
 | `AITR_STEPS` | `30` | Default inference steps. |
 | `AITR_TRUE_CFG` | `4.0` | Default true CFG scale. |
+| `AITR_PRESET` | `balanced` | `fast` / `balanced` / `best`. |
+| `AITR_IDENTITY_STRENGTH` | `0.92` | Face-blend opacity, 0.5–1.0. |
+| `AITR_IDENTITY_LAPLACIAN` | `1` | Laplacian pyramid blend vs. alpha composite. |
+| `AITR_MATCH_SKIN_TONE` | `1` | Tone-match the original face to the relit frame. |
+| `AITR_MAX_FACE_DRIFT` | `0.35` | Abort the face blend past this centroid drift. |
+| `AITR_VALIDATE` | `1` | Run output quality checks. |
 | `ALLOW_NONCOMMERCIAL` | `0` | **Leave at 0 for a product you sell.** |
 | `AITR_SHARE` | `0` | Create a public Gradio link. |
 | `AITR_PORT` | `7860` | Server port. |
@@ -417,9 +526,11 @@ Stated plainly, because a demo that hides these wastes the buyer's time.
 
 | Limitation | Detail |
 |---|---|
-| Nauvari drapes are unreliable | Dhoti-style nine-yard drapes have thin training representation. Phase 3's LoRA targets this. |
+| Nauvari drapes are unreliable | Dhoti-style nine-yard drapes have thin training representation. The negative prompt fights it; Phase 3's LoRA is the real fix. |
 | Heavy occlusion confuses the mask | Arms folded across the torso, or a held handbag, break garment parsing. |
-| Fine zari and mirror work softens | Diffusion output loses sub-pixel metallic thread. Raise steps; `sharpen_garment_region` helps. |
+| Fine zari and mirror work softens | Diffusion output loses sub-pixel metallic thread. Use the **Best** preset, which refines the pallu, and raise garment sharpening. |
+| Region masks are geometric, not segmented | Pallu and pleat masks come from pose landmarks, so they approximate where the fabric *should* be, not where the model actually put it. Unusual poses reduce refinement accuracy. |
+| Refinement doubles generation time | It is a second full denoise pass; only the composite is region-limited. Off by default outside the Best preset. |
 | Seated and turned poses degrade | Standing, front-facing is markedly more reliable. |
 | Full-length photo required for draped garments | Enforced by `require_framing` — a hallucinated lower body will not match the customer. |
 | Print *placement* can drift | Colour and motif transfer well; exact border geometry may shift. Warping models are better here, which is what the comparison grid shows. |
@@ -433,17 +544,24 @@ Stated plainly, because a demo that hides these wastes the buyer's time.
 
 - **Phase 1 — done.** Structure, preprocessing, both commercial backends,
   licence-aware router, face preservation, colour harmonization, Gradio UI,
-  Kaggle notebook, comparison script, 31 tests.
-- **Phase 2.** Saree/lehenga polish: per-drape negative prompts, pallu-region
-  refinement pass, stronger identity preservation, batch mode for catalogues.
+  Kaggle notebook, comparison script.
+- **Phase 2 — done.** Per-drape negative prompts, lehenga dupatta styles,
+  garment sub-region geometry, region-targeted pallu refinement pass, Laplacian
+  identity blending with skin-tone matching, output validation, quality presets,
+  catalogue batch mode. **109 tests.**
 - **Phase 3.** LoRA fine-tuning for sarees: dataset layout, captioning helper,
   T4-tuned training script, LoRA loading in `edit_backend.py`.
 - **Phase 4.** Hugging Face Spaces deployment: Space config, ZeroGPU, README
   card.
 
-Shop-deployment items beyond the original scope, worth planning for: catalogue
-batch processing, a REST API with job queue, per-tenant branding, usage metering,
-and an output audit log for disputes.
+Shop-deployment items still beyond the original scope: a REST API with job queue,
+per-tenant branding, usage metering, and an output audit log for disputes.
+
+**⚠️ Not yet run on a GPU.** Every test here is CPU-level logic — geometry,
+masks, prompts, licensing, orchestration. No try-on image has been generated, so
+the prompt templates and refinement strengths are reasoned, not tuned. Run
+[`notebooks/run_on_kaggle.ipynb`](notebooks/run_on_kaggle.ipynb) before trusting
+any quality claim in this README.
 
 ---
 
