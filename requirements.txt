@@ -1,0 +1,54 @@
+# AI Trial Room - pinned dependencies
+#
+# PyTorch is deliberately NOT pinned here, because the correct wheel depends on
+# your GPU architecture. Install it FIRST, then install this file.
+#
+#   Kaggle / Colab T4 (Turing, sm_75)   - preinstalled, or:
+#       pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+#   RTX 40-series (Ada, sm_89)
+#       pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+#   RTX 50-series (Blackwell, sm_120)   - needs CUDA 12.8 or newer
+#       pip install torch --index-url https://download.pytorch.org/whl/cu128
+#   CPU only (the app runs but generation is impractically slow)
+#       pip install torch
+#
+# Verify with:  python -c "import torch; print(torch.cuda.is_available())"
+
+# --- core inference -------------------------------------------------------- #
+diffusers==0.36.0             # QwenImageEditPlusPipeline + Flux2KleinPipeline
+transformers==4.57.1          # text encoders + SegFormer human parsing
+accelerate==1.10.1            # device_map, cpu offload hooks
+safetensors==0.6.2
+sentencepiece==0.2.0          # Qwen tokenizer
+protobuf==5.28.3              # required by sentencepiece converters
+
+# --- UI -------------------------------------------------------------------- #
+gradio==5.49.1
+
+# --- preprocessing --------------------------------------------------------- #
+mediapipe==0.10.21            # pose + face mesh (Apache-2.0)
+rembg==2.0.67                 # garment background removal (MIT)
+onnxruntime==1.22.0           # rembg backend; swap for onnxruntime-gpu if wanted
+opencv-python-headless==4.11.0.86
+pillow==11.0.0
+numpy==1.26.4                 # <2.0: mediapipe 0.10.x is not numpy-2 safe
+
+# --- utilities ------------------------------------------------------------- #
+huggingface-hub==0.35.3
+peft==0.17.1                  # LoRA loading (Phase 3)
+tqdm==4.67.1
+python-dotenv==1.0.1
+
+# --- optional, large VRAM savings ------------------------------------------ #
+# Nunchaku gives INT4/FP4 SVDQuant weights: the 12B Qwen transformer drops from
+# ~40 GB (bf16) to ~7 GB, and runs in 3-4 GB with async CPU offload. Wheels are
+# per torch+python version, so install it from the project's own index:
+#   https://github.com/nunchaku-tech/nunchaku/releases
+# The app detects it automatically and falls back to bf16 + CPU offload if absent.
+# nunchaku==1.0.1
+
+# --- optional, 8-bit fallback when nunchaku is unavailable ----------------- #
+bitsandbytes==0.45.0 ; platform_system != "Darwin"
+
+# --- development ----------------------------------------------------------- #
+pytest==8.3.4

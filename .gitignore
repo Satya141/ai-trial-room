@@ -1,0 +1,56 @@
+# --- secrets --------------------------------------------------------------- #
+.env
+*.key
+*.pem
+
+# --- privacy: never commit user photos or generated results ---------------- #
+# Uploaded photos are biometric data. Only curated, consented demo images
+# belong in assets/examples/ - add them with `git add -f`.
+outputs/
+assets/examples/*
+!assets/examples/.gitkeep
+!assets/examples/README.md
+*.person.jpg
+*.customer.*
+
+# --- model weights and caches ---------------------------------------------- #
+.cache/
+.hf/
+third_party/
+*.safetensors
+*.ckpt
+*.onnx
+*.pth
+*.bin
+
+# --- training artifacts (Phase 3) ------------------------------------------ #
+lora_out/
+datasets/
+runs/
+wandb/
+
+# --- python ---------------------------------------------------------------- #
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# --- gradio ---------------------------------------------------------------- #
+.gradio/
+flagged/
+gradio_cached_examples/
+
+# --- os / editor ----------------------------------------------------------- #
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
