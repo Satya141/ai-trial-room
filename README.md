@@ -725,5 +725,14 @@ any quality claim in this README.
 | diffusers, transformers, peft | Hugging Face |
 | Qwen2.5-VL (optional captioning) | Alibaba Qwen team - Apache-2.0 |
 
-Built as a portfolio project. The code in this repository is yours to adapt;
-the model weights are governed by their own licences, listed above.
+## Licence
+
+Copyright (c) 2026 J Satyanarayana. All rights reserved. See [LICENSE](LICENSE).
+
+The source is published so the work can be read and evaluated. It is **not**
+open source: copying, modifying or using it in a commercial product requires
+written permission. Commercial licensing enquiries: satyajavvadi2@gmail.com
+
+This applies to the original code only. The third-party models and libraries it
+depends on are governed by their own licences, listed above, and must be
+complied with separately.

@@ -7,7 +7,9 @@ sdk: gradio
 sdk_version: 5.49.1
 app_file: app.py
 pinned: false
-license: apache-2.0
+license: other
+license_name: proprietary
+license_link: LICENSE
 short_description: Virtual try-on for Indian wear - sarees, lehengas, kurtis
 tags:
   - virtual-try-on
