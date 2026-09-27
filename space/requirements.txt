@@ -1,0 +1,37 @@
+# Requirements for the Hugging Face Space.
+#
+# Differs from the project's root requirements.txt in three ways:
+#   1. torch is NOT pinned - Spaces images ship a CUDA build already, and pinning
+#      it here would force a multi-gigabyte reinstall on every rebuild.
+#   2. `spaces` is included, which is what provides the ZeroGPU @spaces.GPU
+#      decorator. It only exists on Spaces.
+#   3. Training-only and dev-only packages are omitted to keep the image small
+#      and the cold start short.
+
+# --- ZeroGPU ---------------------------------------------------------------- #
+spaces
+
+# --- core inference -------------------------------------------------------- #
+diffusers==0.36.0
+transformers==4.57.1
+accelerate==1.10.1
+safetensors==0.6.2
+sentencepiece==0.2.0
+protobuf==5.28.3
+
+# --- UI -------------------------------------------------------------------- #
+# Must match `sdk_version` in README.md front matter.
+gradio==5.49.1
+
+# --- preprocessing --------------------------------------------------------- #
+mediapipe==0.10.21
+rembg==2.0.67
+onnxruntime==1.22.0
+opencv-python-headless==4.11.0.86
+pillow==11.0.0
+numpy==1.26.4
+
+# --- utilities ------------------------------------------------------------- #
+huggingface-hub==0.35.3
+# peft is needed at inference time only to load a trained LoRA.
+peft==0.17.1

@@ -1,0 +1,8 @@
+# apt packages installed into the Space image before pip runs.
+#
+# opencv-python-headless still dynamically links libGL and libglib even in its
+# headless build, and rembg's onnxruntime path pulls in the same. Without these
+# the Space fails at import with "libGL.so.1: cannot open shared object file",
+# which is the single most common Spaces startup failure for this stack.
+libgl1
+libglib2.0-0

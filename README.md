@@ -139,6 +139,8 @@ flowchart TD
 | [`config.py`](ai_trial_room/config.py) | Every setting, all env-overridable. Model specs with licence class. |
 | [`preprocessing/person.py`](ai_trial_room/preprocessing/person.py) | Letterbox, MediaPipe pose, SegFormer parsing, per-category inpaint mask. |
 | [`preprocessing/garment.py`](ai_trial_room/preprocessing/garment.py) | rembg background removal, alpha trim, centre, resize. |
+| [`preprocessing/parsing.py`](ai_trial_room/preprocessing/parsing.py) | Licence-aware human parsing; MediaPipe default, pose-split coarse classes. |
+| [`spaces_support.py`](ai_trial_room/spaces_support.py) | ZeroGPU decorator, duration estimation, Space config overrides. |
 | [`preprocessing/regions.py`](ai_trial_room/preprocessing/regions.py) | Pallu / pleat / blouse / skirt sub-region masks from pose geometry. |
 | [`backends/base.py`](ai_trial_room/backends/base.py) | `TryOnBackend` ABC. Lazy load, licence gate, OOM translation, memory savers, quality presets. |
 | [`backends/prompts.py`](ai_trial_room/backends/prompts.py) | Drape templates + per-drape negative prompts. **The Indian-wear specialisation lives here.** |
@@ -462,6 +464,61 @@ Writes a labelled PNG plus a JSON sidecar of timings and prompts to `outputs/`.
 
 ---
 
+## Deploying to Hugging Face Spaces
+
+```bash
+python scripts/deploy_space.py --repo your-name/ai-trial-room --dry-run
+```
+
+```bash
+export HF_TOKEN=hf_...
+python scripts/deploy_space.py --repo your-name/ai-trial-room --hardware zero-a10g
+```
+
+The dry run prints the exact upload manifest and refuses to proceed if anything
+is missing or looks like a leak. A real push asks for confirmation, because it
+publishes a public page and paid tiers bill your account.
+
+### What is deployed, and what is not
+
+| Uploaded | Never uploaded |
+|---|---|
+| `app.py`, the `ai_trial_room` package | `datasets/`, `loras/`, `outputs/` |
+| `space/README.md` → the Space card | `tests/`, `notebooks/`, `third_party/` |
+| `space/requirements.txt` → `requirements.txt` | `.env`, any token or secret |
+| `space/packages.txt` (apt deps) | model weights, `.ipynb`, `__pycache__` |
+
+`verify_manifest` re-checks for secrets and training data by scanning the final
+manifest, so a mistake in the exclusion lists is still caught.
+
+### ZeroGPU
+
+On ZeroGPU there is **no GPU attached to the process** until a `@spaces.GPU`
+function runs. [`spaces_support.py`](ai_trial_room/spaces_support.py) handles the
+three consequences:
+
+- **The hardware snapshot is stale.** `detect_hardware` is cached and would
+  record "no GPU" at startup, picking the wrong dtype. `reset_hardware_cache()`
+  runs at the top of each generation.
+- **CPU offload becomes counterproductive.** It exists to stream weights onto a
+  small resident GPU; on ZeroGPU the GPU is large and brief, so offloading only
+  adds transfer time. `apply_space_overrides()` turns it off.
+- **The duration must be declared.** ZeroGPU kills a call that outruns its quota,
+  so `_gpu_duration` estimates from the request's own preset and refine flag —
+  a Best-with-refinement call declares ~199 s where Fast declares ~91 s. The
+  parameter indices are read from `generate`'s signature, so adding a UI control
+  cannot silently break the estimate.
+
+Off Spaces every one of these is a no-op, so local development is unchanged.
+
+### A deployed Space is locked to commercial-safe models
+
+`apply_space_overrides()` forces `ALLOW_NONCOMMERCIAL` off and enables output
+deletion at startup. A public deployment therefore cannot serve CatVTON or the
+research-licensed parser even if the environment variable is set.
+
+---
+
 ## Configuration
 
 Everything lives in [`config.py`](ai_trial_room/config.py) and is
@@ -486,6 +543,7 @@ environment-overridable.
 | `AITR_MATCH_SKIN_TONE` | `1` | Tone-match the original face to the relit frame. |
 | `AITR_MAX_FACE_DRIFT` | `0.35` | Abort the face blend past this centroid drift. |
 | `AITR_VALIDATE` | `1` | Run output quality checks. |
+| `AITR_PARSING_PROVIDER` | `auto` | `auto` / `mediapipe` / `segformer` / `pose_only`. |
 | `ALLOW_NONCOMMERCIAL` | `0` | **Leave at 0 for a product you sell.** |
 | `AITR_SHARE` | `0` | Create a public Gradio link. |
 | `AITR_PORT` | `7860` | Server port. |
@@ -526,34 +584,50 @@ resolution rather than shown a traceback.
 | Model | Licence | Commercial | VRAM (bf16) | Role |
 |---|---|---|---|---|
 | [`Qwen/Qwen-Image-Edit-2511`](https://huggingface.co/Qwen/Qwen-Image-Edit-2511) | Apache-2.0 | ✅ | ~16 GB | Primary, all categories |
-| [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) | Apache-2.0 | ✅ | ~13 GB | Fast tier |
+| [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) | Apache-2.0 | ✅ | ~13 GB | Fast tier, LoRA training |
 | [MediaPipe](https://github.com/google-ai-edge/mediapipe) Pose + FaceMesh | Apache-2.0 | ✅ | CPU | Pose, face preservation |
+| [MediaPipe Selfie Multiclass](https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite) | Apache-2.0 | ✅ | CPU | **Human parsing (default)** |
 | [rembg](https://github.com/danielgatis/rembg) + u2net | MIT | ✅ | CPU | Garment background removal |
+| [Qwen2.5-VL-3B](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct) | Apache-2.0 | ✅ | ~7 GB | Optional dataset captioning |
+
+**There is no non-commercial component in the default configuration.** A public
+Space additionally forces `ALLOW_NONCOMMERCIAL` off at startup, so a deployed
+instance cannot serve a research-licensed model even if the environment says
+otherwise.
 
 ### Gated behind `ALLOW_NONCOMMERCIAL=1`
 
-| Model | Licence | Commercial |
+| Model | Licence | Role |
 |---|---|---|
-| [CatVTON](https://github.com/Zheng-Chong/CatVTON) | CC BY-NC-SA 4.0 | ❌ Research only |
+| [CatVTON](https://github.com/Zheng-Chong/CatVTON) | CC BY-NC-SA 4.0 | Garment-warping quality baseline |
+| [`mattmdjaga/segformer_b2_clothes`](https://huggingface.co/mattmdjaga/segformer_b2_clothes) | NVIDIA Source Code License | Finer-grained human parsing |
 
-### ⚠️ One dependency needs your attention before you sell
+### ✅ How the human-parsing licence problem was solved
 
-[`mattmdjaga/segformer_b2_clothes`](https://huggingface.co/mattmdjaga/segformer_b2_clothes)
-(human parsing) inherits the **NVIDIA Source Code License** for SegFormer, which
-is research-only. It builds the inpaint mask.
+Phase 1 shipped with a real blocker: the parsing model that builds the garment
+mask was research-licensed, which would have stopped you invoicing anyone.
 
-Three ways to resolve it:
+The fix is **MediaPipe Selfie Multiclass** — Apache-2.0, 106 K parameters, 447 KB,
+from Google. It segments `background / hair / body-skin / face-skin / clothes /
+accessories`.
 
-1. **Drop it.** `parse_human` already degrades gracefully to a pose-derived
-   fallback mask (`test_mask_falls_back_when_parsing_unavailable` covers this).
-   Quality drops on complex poses.
-2. **Retrain the head.** The SegFormer *architecture* is permissive; the
-   *weights* are the problem. Fine-tune on a commercially licensed parsing
-   dataset.
-3. **License it.** Buy a commercial human-parsing model.
+The catch was that it gives **one** `clothes` class. It cannot tell a kurti from
+the jeans underneath, so a naive mask would repaint the customer's trousers.
+[`_split_by_pose`](ai_trial_room/preprocessing/parsing.py) recovers the
+distinction geometrically, using hip landmarks the pipeline already computes:
 
-I have deliberately not papered over this. If you are selling to shops, resolve
-it before you invoice anyone.
+| MediaPipe class | Above the hip line | Below the hip line |
+|---|---|---|
+| `clothes` | `UPPER_CLOTHES` | `PANTS` |
+| `body-skin` | arms | legs |
+
+That restores every label the category masks need, from permissive weights.
+`test_split_restores_the_kurti_versus_saree_mask_difference` pins the outcome: a
+kurti mask leaves the trousers at 0, a saree mask repaints them at 255.
+
+Parsing is pluggable via `AITR_PARSING_PROVIDER` (`auto` / `mediapipe` /
+`segformer` / `pose_only`), and the resolver refuses to hand back a
+non-commercial provider unless you have explicitly opted in.
 
 ### Also worth knowing
 
@@ -561,7 +635,7 @@ it before you invoice anyone.
   preservation, and its models are non-commercial. This project uses MediaPipe
   FaceMesh instead.
 - **BRIA RMBG-2.0 is avoided on purpose.** Better background removal than u2net,
-  but requires a paid commercial agreement.
+  but it requires a paid commercial agreement.
 
 Model licences govern the *weights*, independent of this repository's own code
 licence. Always read the model card before shipping.
@@ -620,8 +694,9 @@ Stated plainly, because a demo that hides these wastes the buyer's time.
   template and VLM captioning, flow-matching LoRA trainer with hardware-aware
   defaults, adapter discovery with compatibility gating, automatic trigger
   insertion, LoRA dropdown in the UI. **166 tests.**
-- **Phase 4.** Hugging Face Spaces deployment: Space config, ZeroGPU, README
-  card.
+- **Phase 4 — done.** Commercially-safe human parsing (the last non-commercial
+  dependency removed), ZeroGPU support with dynamic duration estimation, Space
+  card and config, verified deploy script. **201 tests.**
 
 Shop-deployment items still beyond the original scope: a REST API with job queue,
 per-tenant branding, usage metering, and an output audit log for disputes.

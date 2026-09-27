@@ -351,7 +351,8 @@ MODEL_SPECS: Final[dict[BackendId, ModelSpec]] = {
     ),
 }
 
-#: Human-parsing model used to build body / clothing masks.
+#: SegFormer human-parsing model. RESEARCH LICENCE - see
+#: :mod:`ai_trial_room.preprocessing.parsing` for the commercial default.
 HUMAN_PARSING_REPO: Final[str] = os.environ.get(
     "AITR_PARSING_REPO", "mattmdjaga/segformer_b2_clothes"
 )
@@ -523,6 +524,12 @@ class AppConfig:
     #: Allow research-licensed backends to load. Never enable in production.
     allow_noncommercial: bool = field(
         default_factory=lambda: _env_bool("ALLOW_NONCOMMERCIAL", False)
+    )
+    #: Human-parsing provider: ``auto`` | ``mediapipe`` | ``segformer`` |
+    #: ``pose_only``. ``auto`` picks the Apache-2.0 MediaPipe model, so a
+    #: commercial deployment never reaches the research-licensed SegFormer.
+    parsing_provider: str = field(
+        default_factory=lambda: os.environ.get("AITR_PARSING_PROVIDER", "auto")
     )
     #: Read from the environment only - never commit a token.
     hf_token: str | None = field(default_factory=lambda: os.environ.get("HF_TOKEN") or None)

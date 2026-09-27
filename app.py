@@ -26,6 +26,7 @@ a salesperson, not an engineer.
 from __future__ import annotations
 
 import argparse
+import inspect
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -48,7 +49,16 @@ from ai_trial_room.config import (
     QualityPreset,
 )
 from ai_trial_room.lora import NO_LORA_LABEL, lora_choices
+from ai_trial_room.preprocessing.parsing import provider_report
 from ai_trial_room.router import describe_routing, run_try_on
+from ai_trial_room.spaces_support import (
+    apply_space_overrides,
+    detect_space,
+    estimate_duration,
+    gpu,
+    reset_hardware_cache,
+    space_footer,
+)
 from ai_trial_room.utils.device import detect_hardware, vram_report
 from ai_trial_room.utils.errors import InvalidInputError, TrialRoomError
 from ai_trial_room.utils.image_io import (
@@ -143,6 +153,52 @@ def free_memory() -> str:
     return f"GPU memory released. {vram_report()}"
 
 
+def _arg(args: tuple[Any, ...], kwargs: dict[str, Any], name: str) -> Any:
+    """Read one of :func:`generate`'s arguments by name from ``*args``/``**kwargs``.
+
+    The positional index is looked up from the live signature rather than
+    hardcoded, so inserting a control into the UI cannot silently make the
+    ZeroGPU duration estimate read the wrong slot.
+
+    Returns
+    -------
+    Any
+        The argument value, or ``None`` when it was not supplied.
+    """
+    if name in kwargs:
+        return kwargs[name]
+    index = _GENERATE_PARAM_INDEX.get(name)
+    if index is None or index >= len(args):
+        return None
+    return args[index]
+
+
+def _gpu_duration(*args: Any, **kwargs: Any) -> int:
+    """Estimate this request's GPU seconds, for the ZeroGPU quota.
+
+    ZeroGPU kills a call that outruns its declared duration, so the estimate is
+    derived from the request's own settings rather than a fixed ceiling: a Best
+    preset with refinement needs roughly four times a Fast one. Overestimating
+    only costs queue priority, so every fallback errs high.
+    """
+    try:
+        preset_label = _arg(args, kwargs, "preset_label") or CONFIG.default_preset.label
+        raw_steps = _arg(args, kwargs, "steps")
+        refine = bool(_arg(args, kwargs, "refine"))
+
+        settings = QualityPreset.from_label(str(preset_label)).settings()
+        steps = int(raw_steps) if raw_steps else settings.steps
+
+        return estimate_duration(
+            steps,
+            CONFIG.default_backend.value,
+            refine=refine or settings.refine,
+        )
+    except Exception:  # noqa: BLE001 - a bad estimate must not block the request
+        return estimate_duration(40, CONFIG.default_backend.value, refine=True)
+
+
+@gpu(duration=_gpu_duration)
 def generate(
     person_image: Image.Image | None,
     garment_image: Image.Image | None,
@@ -199,6 +255,10 @@ def generate(
     def report(fraction: float, message: str) -> None:
         """Bridge the backend progress callback onto Gradio's tracker."""
         progress(fraction, desc=message)
+
+    # On ZeroGPU the GPU only exists inside this call, so the hardware snapshot
+    # cached during startup says "no GPU" and would pick the wrong dtype.
+    reset_hardware_cache()
 
     # Sweep any previous result that has outlived its download window.
     purge_download_cache()
@@ -286,6 +346,14 @@ def generate(
             "⚠️ Something went wrong. Please try again, or check the logs if this "
             f"keeps happening. ({type(exc).__name__})",
         )
+
+
+#: Positional index of each of :func:`generate`'s parameters, derived from its
+#: signature so :func:`_arg` cannot drift when a UI control is added.
+_GENERATE_PARAM_INDEX: dict[str, int] = {
+    name: index
+    for index, name in enumerate(inspect.signature(generate).parameters)
+}
 
 
 def _backend_choices() -> list[str]:
@@ -604,6 +672,7 @@ def _about_markdown() -> str:
         f"~{spec.vram_gb_bf16:.0f} GB |"
         for spec in MODEL_SPECS.values()
     )
+    parsing = provider_report()
     return f"""
 ### How it works
 
@@ -624,8 +693,19 @@ def _about_markdown() -> str:
 |---|---|---|---|
 {rows}
 
-Supporting models: **MediaPipe** Pose & FaceMesh (Apache-2.0), **rembg** (MIT),
-**SegFormer human parsing** (NVIDIA Source Code License — research).
+### Supporting models — all commercially usable
+
+| Component | Model | Licence |
+|---|---|---|
+| Pose & face | MediaPipe Pose / FaceMesh | Apache-2.0 ✅ |
+| Human parsing | {parsing["Provider"]} | {parsing["Licence"]} {"✅" if parsing["Commercial use"] == "yes" else "⚠️"} |
+| Garment cut-out | rembg + u2net | MIT ✅ |
+
+Human parsing is pluggable. The default is MediaPipe Selfie Multiclass
+(Apache-2.0), whose coarse `clothes` class is split into upper and lower garments
+using the detected hip line — which is what keeps a kurti mask off your trousers.
+The finer-grained SegFormer model is research-licensed and disabled unless
+`ALLOW_NONCOMMERCIAL=1`.
 
 ### Privacy
 
@@ -663,6 +743,10 @@ def main() -> None:
 
     setup_logging(args.log_level)
     logger.info("%s v%s starting", APP_TITLE, __import__("ai_trial_room").__version__)
+
+    # Must run before build_ui(), which reads the config it adjusts.
+    apply_space_overrides()
+    info = detect_space()
     logger.info("Hardware: %s", detect_hardware().describe())
     logger.info(
         "Commercial-only mode: %s | loaded backends: %s",
@@ -671,13 +755,17 @@ def main() -> None:
     )
 
     demo = build_ui()
-    demo.queue(max_size=12).launch(
-        share=args.share or CONFIG.share_gradio,
-        server_name=args.host,
-        server_port=args.port,
-        show_api=False,
-        show_error=True,
-    )
+
+    # A Space supplies its own host and port; passing ours breaks the proxy.
+    launch_kwargs: dict[str, Any] = {"show_api": False, "show_error": True}
+    if not info.on_space:
+        launch_kwargs.update(
+            share=args.share or CONFIG.share_gradio,
+            server_name=args.host,
+            server_port=args.port,
+        )
+
+    demo.queue(max_size=12).launch(**launch_kwargs)
 
 
 if __name__ == "__main__":

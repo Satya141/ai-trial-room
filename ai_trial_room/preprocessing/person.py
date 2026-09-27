@@ -26,7 +26,8 @@ from typing import Any, Final, Sequence
 import numpy as np
 from PIL import Image, ImageFilter
 
-from ai_trial_room.config import CONFIG, HUMAN_PARSING_REPO, Category, PreprocessConfig
+from ai_trial_room.config import CONFIG, Category, PreprocessConfig
+from ai_trial_room.preprocessing.parsing import parse_human as parse_provider_parse
 from ai_trial_room.utils.errors import (
     NoPersonDetectedError,
     PersonPartiallyVisibleError,
@@ -241,6 +242,9 @@ class ParseResult:
     """False when the parsing model could not be loaded and a pose-derived
     fallback mask was used instead."""
 
+    provider: str = ""
+    """Which provider produced this map, for logs and the About panel."""
+
     def mask_for_labels(self, labels: Sequence[AtrLabel]) -> np.ndarray:
         """Return a boolean mask that is True where any of ``labels`` appears."""
         wanted = np.array([int(label) for label in labels], dtype=self.label_map.dtype)
@@ -400,66 +404,33 @@ def require_framing(pose: PoseResult, category: Category) -> None:
 # --------------------------------------------------------------------------- #
 
 
-@functools.lru_cache(maxsize=1)
-def _load_parser() -> tuple[Any, Any] | None:
-    """Load and cache the SegFormer human-parsing model.
+def parse_human(image: Image.Image, pose: PoseResult | None = None) -> ParseResult:
+    """Produce a per-pixel garment/body label map.
+
+    Delegates to :mod:`ai_trial_room.preprocessing.parsing`, which selects a
+    licence-appropriate provider - by default the Apache-2.0 MediaPipe model,
+    refined with pose geometry. Degrades to ``available=False`` rather than
+    raising, so the app falls back to geometric masks instead of crashing.
+
+    Parameters
+    ----------
+    image:
+        Letterboxed RGB image.
+    pose:
+        Pose result. Passing it lets MediaPipe's single ``clothes`` class be
+        split into upper and lower garments at the hip line, which is what keeps
+        a kurti mask off the customer's trousers.
 
     Returns
     -------
-    tuple or None
-        ``(processor, model)``, or ``None`` when transformers or the weights
-        are unavailable - callers then fall back to a pose-derived mask.
+    ParseResult
     """
-    try:
-        import torch
-        from transformers import AutoModelForSemanticSegmentation, SegformerImageProcessor
-    except ImportError:
-        logger.warning("transformers unavailable; human parsing disabled.")
-        return None
-
-    try:
-        processor = SegformerImageProcessor.from_pretrained(HUMAN_PARSING_REPO)
-        model = AutoModelForSemanticSegmentation.from_pretrained(HUMAN_PARSING_REPO)
-    except Exception as exc:  # noqa: BLE001 - network/hub failures are varied
-        logger.warning("Could not load human parsing model %s: %s", HUMAN_PARSING_REPO, exc)
-        return None
-
-    model.eval()
-    if torch.cuda.is_available():
-        model.to("cuda")
-    logger.info("Loaded human parsing model %s", HUMAN_PARSING_REPO)
-    return processor, model
-
-
-def parse_human(image: Image.Image) -> ParseResult:
-    """Produce a per-pixel garment/body label map.
-
-    Falls back to an empty map (``available=False``) if the parsing model
-    cannot be loaded, so the app degrades instead of crashing.
-    """
-    loaded = _load_parser()
-    width, height = image.size
-
-    if loaded is None:
-        return ParseResult(label_map=np.zeros((height, width), dtype=np.uint8), available=False)
-
-    processor, model = loaded
-    import torch
-
-    inputs = processor(images=image.convert("RGB"), return_tensors="pt")
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
-
-    with torch.inference_mode():
-        logits = model(**inputs).logits
-
-    upsampled = torch.nn.functional.interpolate(
-        logits, size=(height, width), mode="bilinear", align_corners=False
+    outcome = parse_provider_parse(image, pose)
+    return ParseResult(
+        label_map=outcome.label_map,
+        available=outcome.available,
+        provider=outcome.provider.value,
     )
-    label_map = upsampled.argmax(dim=1)[0].to("cpu").numpy().astype(np.uint8)
-
-    coverage = float((label_map != int(AtrLabel.BACKGROUND)).mean())
-    logger.info("Human parsing done: person covers %.1f%% of frame", coverage * 100)
-    return ParseResult(label_map=label_map, available=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -645,7 +616,7 @@ def prepare_person(
     pose = detect_pose(image, cfg)
     require_framing(pose, category)
 
-    parse = parse_human(image)
+    parse = parse_human(image, pose)
     inpaint_mask = build_inpaint_mask(parse, pose, category, cfg)
 
     return PersonAssets(

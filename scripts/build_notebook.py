@@ -485,6 +485,30 @@ print("UI dropdown:", lora_choices())
     ),
     markdown(
         """
+## 11. Optional: deploy to a Hugging Face Space
+
+Push this app to your own Space with ZeroGPU. The dry run prints the exact upload
+manifest and refuses to proceed if anything is missing or looks like a leak —
+training photos, trained adapters and `.env` are never uploaded.
+"""
+    ),
+    code(
+        """
+!python scripts/deploy_space.py --repo YOUR_NAME/ai-trial-room --dry-run
+"""
+    ),
+    code(
+        """
+# Needs a WRITE token: https://huggingface.co/settings/tokens
+# --yes skips the interactive confirmation, which a notebook cannot answer.
+# !python scripts/deploy_space.py \
+#     --repo YOUR_NAME/ai-trial-room \
+#     --hardware zero-a10g \
+#     --yes
+"""
+    ),
+    markdown(
+        """
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -499,12 +523,18 @@ print("UI dropdown:", lora_choices())
 | LoRA output is noise | The adapter was trained for a different base model — check `aitr_lora.json` |
 | OOM while training | Use `--backend flux_klein`, or `--quantize-base 4bit --width 512 --height 768` |
 | `numpy.dtype size changed` | A NumPy-2 wheel crept in: `pip install "numpy==1.26.4"` and restart the kernel |
+| `libGL.so.1: cannot open shared object file` | On a Space, `space/packages.txt` supplies `libgl1`; locally `apt install libgl1` |
+| Space build fails on `sdk_version` | It must match the pinned `gradio` in `space/requirements.txt` |
+| ZeroGPU call killed mid-generation | The declared duration was too low — lower the steps or use the Fast preset |
 
 ## Licensing reminder
 
-The default configuration uses **only Apache-2.0 models**, so output may be
-used commercially. Setting `ALLOW_NONCOMMERCIAL=1` enables CatVTON
-(CC BY-NC-SA 4.0) for comparison — **do not sell anything produced that way.**
+The default configuration uses **only Apache-2.0 / MIT models**, including the
+human parser (MediaPipe Selfie Multiclass), so output may be used commercially.
+
+Setting `ALLOW_NONCOMMERCIAL=1` enables CatVTON (CC BY-NC-SA 4.0) and the
+SegFormer parser (NVIDIA research licence) — **do not sell anything produced that
+way.** A deployed Space forces this off at startup regardless.
 """
     ),
 ]

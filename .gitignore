@@ -14,6 +14,7 @@ assets/examples/*
 *.customer.*
 
 # --- model weights and caches ---------------------------------------------- #
+# .cache/ holds the downloaded MediaPipe parsing model (447 KB, Apache-2.0).
 .cache/
 .hf/
 third_party/
