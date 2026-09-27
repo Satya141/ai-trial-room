@@ -47,6 +47,7 @@ from ai_trial_room.config import (
     DupattaStyle,
     QualityPreset,
 )
+from ai_trial_room.lora import NO_LORA_LABEL, lora_choices
 from ai_trial_room.router import describe_routing, run_try_on
 from ai_trial_room.utils.device import detect_hardware, vram_report
 from ai_trial_room.utils.errors import InvalidInputError, TrialRoomError
@@ -150,6 +151,8 @@ def generate(
     dupatta_label: str,
     preset_label: str,
     backend_label: str,
+    lora_label: str,
+    lora_weight: float,
     steps: int,
     true_cfg: float,
     seed: int,
@@ -173,6 +176,8 @@ def generate(
         Uploads from the two image components.
     category_label, drape_label, dupatta_label, preset_label, backend_label:
         Dropdown and radio selections (UI labels, not enum values).
+    lora_label, lora_weight:
+        Selected drape adapter and its strength.
     steps, true_cfg, seed:
         Advanced sampler settings. ``steps`` of 0 means "use the preset".
     preserve_face, identity_strength, harmonize_colors:
@@ -229,6 +234,8 @@ def generate(
             harmonize_colors=bool(harmonize_colors),
             refine=bool(refine),
             sharpen=float(sharpen),
+            lora_name=None if lora_label == NO_LORA_LABEL else lora_label,
+            lora_weight=float(lora_weight),
         )
 
         # Identity strength is global config rather than per-request, so apply it
@@ -443,6 +450,26 @@ def build_ui() -> gr.Blocks:
                         info="Automatic picks a commercially licensed model that "
                         "supports your chosen category.",
                     )
+                    lora_choice_list = lora_choices()
+                    lora_input = gr.Dropdown(
+                        lora_choice_list,
+                        value=NO_LORA_LABEL,
+                        label="Drape LoRA",
+                        info=(
+                            "Trained adapters found in loras/. The trigger token is "
+                            "added to the prompt automatically."
+                            if len(lora_choice_list) > 1
+                            else "No adapters found in loras/. Train one with "
+                            "scripts/train_saree_lora.py (see datasets/README.md)."
+                        ),
+                        interactive=len(lora_choice_list) > 1,
+                    )
+                    lora_weight_input = gr.Slider(
+                        0.0, 1.5, value=1.0, step=0.05,
+                        label="LoRA strength",
+                        info="Above ~1.2 the drape LoRA starts overriding the "
+                        "garment reference.",
+                    )
                     steps_input = gr.Slider(
                         0, 60, value=0, step=1,
                         label="Inference steps",
@@ -556,7 +583,8 @@ def build_ui() -> gr.Blocks:
             generate,
             inputs=[
                 person_input, garment_input, category_input, drape_input,
-                dupatta_input, preset_input, backend_input, steps_input,
+                dupatta_input, preset_input, backend_input, lora_input,
+                lora_weight_input, steps_input,
                 cfg_input, seed_input, face_input, identity_input,
                 harmonize_input, refine_input, sharpen_input, extra_input,
                 consent_input,

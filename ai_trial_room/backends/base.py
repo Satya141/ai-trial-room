@@ -103,6 +103,12 @@ class TryOnOptions:
     #: Unsharp amount applied inside the garment region, 0 disables.
     sharpen: float = 0.35
 
+    # --- Phase 3: LoRA ---------------------------------------------------- #
+    #: Name of a discovered LoRA to apply, or ``None`` for the base model.
+    lora_name: str | None = None
+    #: Adapter scale. Above ~1.2 a drape LoRA starts overriding the garment.
+    lora_weight: float = 1.0
+
     @classmethod
     def from_preset(cls, preset: QualityPreset, **overrides: Any) -> "TryOnOptions":
         """Build options from a :class:`QualityPreset`, with optional overrides.
@@ -167,6 +173,9 @@ class TryOnResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     #: Which sub-regions were refined in a second pass, if any.
     refined_regions: list[str] = field(default_factory=list)
+    #: Name of the LoRA applied, if any.
+    lora_name: str | None = None
+    lora_weight: float = 1.0
 
     @property
     def spec(self) -> ModelSpec:
@@ -178,9 +187,10 @@ class TryOnResult:
         refined = (
             f" · refined {', '.join(self.refined_regions)}" if self.refined_regions else ""
         )
+        lora = f" · LoRA `{self.lora_name}` @ {self.lora_weight:.2f}" if self.lora_name else ""
         return (
             f"**{self.spec.repo_id}** · {self.steps} steps · seed `{self.seed}` · "
-            f"{self.duration_s:.1f}s{refined} · license {self.spec.license_name}"
+            f"{self.duration_s:.1f}s{refined}{lora} · license {self.spec.license_name}"
         )
 
 
@@ -206,6 +216,8 @@ class TryOnBackend(abc.ABC):
     def __init__(self) -> None:
         self._pipeline: Any | None = None
         self._loaded_at: float | None = None
+        #: Name of the LoRA currently attached, if any.
+        self._active_lora: str | None = None
 
     # -- introspection ----------------------------------------------------- #
 
@@ -304,6 +316,7 @@ class TryOnBackend(abc.ABC):
         logger.info("Unloading %s | VRAM before: %s", self.backend_id.value, vram_report())
         self._pipeline = None
         self._loaded_at = None
+        self._active_lora = None
         free_vram()
         logger.info("Unloaded %s | VRAM after: %s", self.backend_id.value, vram_report())
 

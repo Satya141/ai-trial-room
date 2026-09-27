@@ -50,5 +50,11 @@ python-dotenv==1.0.1
 # --- optional, 8-bit fallback when nunchaku is unavailable ----------------- #
 bitsandbytes==0.45.0 ; platform_system != "Darwin"
 
+# --- optional, LoRA training (Phase 3) ------------------------------------- #
+# peft (above) is the only hard requirement for training. These help:
+#   bitsandbytes (above) - 4-bit base + 8-bit AdamW, needed to train on <24GB
+#   qwen-vl-utils        - only for `--strategy vlm` captioning
+# qwen-vl-utils==0.0.8
+
 # --- development ----------------------------------------------------------- #
 pytest==8.3.4

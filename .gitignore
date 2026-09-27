@@ -24,10 +24,16 @@ third_party/
 *.bin
 
 # --- training artifacts (Phase 3) ------------------------------------------ #
+# Trained adapters can be large and may carry a model's likeness. Commit one
+# deliberately with `git add -f loras/<name>` if you intend to publish it.
+loras/
 lora_out/
-datasets/
 runs/
 wandb/
+
+# Training images are photos of people. Never commit them; the README stays.
+datasets/*
+!datasets/README.md
 
 # --- python ---------------------------------------------------------------- #
 __pycache__/

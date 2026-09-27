@@ -37,6 +37,13 @@ from ai_trial_room.backends.prompts import (
     build_refine_prompt,
 )
 from ai_trial_room.config import CONFIG, BackendId, Category
+from ai_trial_room.lora import (
+    LoraSpec,
+    apply_trigger,
+    find_lora,
+    load_into_pipeline,
+    unload_from_pipeline,
+)
 from ai_trial_room.postprocessing.blend import feather_composite
 from ai_trial_room.preprocessing.regions import (
     GarmentRegion,
@@ -192,6 +199,59 @@ class _EditBackendBase(TryOnBackend):
 
     # -- generation -------------------------------------------------------- #
 
+    # -- LoRA -------------------------------------------------------------- #
+
+    def _sync_lora(self, request: TryOnRequest) -> LoraSpec | None:
+        """Attach, swap or detach the LoRA this request asks for.
+
+        Loading an adapter mutates the resident pipeline, so the backend tracks
+        which one is attached and only touches the pipeline when the request
+        differs. Without that bookkeeping, repeated generations would stack
+        adapters on top of each other.
+
+        Parameters
+        ----------
+        request:
+            The request, whose ``options.lora_name`` selects the adapter.
+
+        Returns
+        -------
+        LoraSpec or None
+            The adapter now active, or ``None`` for the base model. Never raises:
+            a LoRA that will not load falls back to the base model with a warning
+            rather than losing the user's generation.
+        """
+        wanted = request.options.lora_name
+        spec = find_lora(wanted) if wanted else None
+
+        if spec is not None and not spec.is_compatible(self.backend_id):
+            logger.warning(
+                "LoRA %s was trained for %s, not %s; ignoring it.",
+                spec.name,
+                spec.backend.value,
+                self.backend_id.value,
+            )
+            spec = None
+
+        target = spec.name if spec else None
+        if target == self._active_lora:
+            return spec
+
+        assert self._pipeline is not None
+        if self._active_lora is not None:
+            unload_from_pipeline(self._pipeline)
+            self._active_lora = None
+
+        if spec is None:
+            return None
+
+        if load_into_pipeline(self._pipeline, spec, weight=request.options.lora_weight):
+            self._active_lora = spec.name
+            return spec
+
+        logger.warning("Falling back to the base model for this generation.")
+        return None
+
     def _build_prompt(self, request: TryOnRequest) -> str:
         """Compose the editing instruction for this request."""
         return build_prompt(
@@ -235,7 +295,13 @@ class _EditBackendBase(TryOnBackend):
 
     def _generate(self, request: TryOnRequest) -> TryOnResult:
         """Run the editing pipeline and return the try-on image."""
+        lora = self._sync_lora(request)
+
         prompt = self._build_prompt(request)
+        # The trigger token must be present or the adapter does nothing - the
+        # single most common reason a freshly trained LoRA "has no effect".
+        prompt = apply_trigger(prompt, lora)
+
         seed = request.options.resolved_seed()
         kwargs = self._pipeline_kwargs(request, prompt, seed)
         steps = int(kwargs.get("num_inference_steps", self.spec.default_steps))
@@ -263,6 +329,8 @@ class _EditBackendBase(TryOnBackend):
             steps=steps,
             duration_s=0.0,  # filled in by TryOnBackend.generate
             refined_regions=refined_regions,
+            lora_name=lora.name if lora else None,
+            lora_weight=request.options.lora_weight,
             metadata={
                 "family": self.family,
                 "repo_id": self.spec.repo_id,
@@ -272,6 +340,7 @@ class _EditBackendBase(TryOnBackend):
                 "framing": request.person.framing,
                 "dominant_shoulder": request.person.pose.dominant_shoulder,
                 "background_removed": request.garment.background_removed,
+                "lora": lora.describe() if lora else None,
             },
         )
 

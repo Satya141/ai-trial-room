@@ -410,6 +410,81 @@ else:
     ),
     markdown(
         """
+## 10. Optional: train a saree drape LoRA
+
+The base models drape a Nivi saree competently and a **Nauvari** one badly. A
+LoRA trained on your own correctly-draped photos is the fix.
+
+**Which base can a T4 train?**
+
+| Base | Params | On a 16 GB T4 |
+|---|---|---|
+| `FLUX.2-klein-4B` | 4 B | ✅ default target |
+| `Qwen-Image-Edit-2511` | 12 B | ⚠️ marginal — needs 4-bit + 512 px |
+
+Dataset layout, photo guidance and the consent checklist are in
+[`datasets/README.md`](../datasets/README.md). Short version: name files
+`nivi_001.jpg`, `bengali_002.jpg`, … and aim for 150+ balanced images.
+
+> Nothing here has been validated on a GPU. The loss and memory strategy are
+> correct by construction, but no run has completed — treat the
+> hyperparameters as starting points.
+"""
+    ),
+    code(
+        """
+!pip install -q "peft==0.17.1" "bitsandbytes==0.45.0"
+"""
+    ),
+    code(
+        """
+# Upload your images to datasets/saree_drapes/ first, then caption them.
+from pathlib import Path
+
+dataset = Path("datasets/saree_drapes")
+dataset.mkdir(parents=True, exist_ok=True)
+
+count = len([p for p in dataset.rglob("*") if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}])
+print(f"{count} image(s) in {dataset}")
+if count == 0:
+    print("Upload images named nivi_001.jpg, bengali_001.jpg, ... then re-run.")
+"""
+    ),
+    code(
+        """
+!python scripts/caption_dataset.py --dataset datasets/saree_drapes
+"""
+    ),
+    code(
+        """
+# Always dry-run first: it validates the dataset and prints the resolved plan
+# (base model, resolution, quantization, batch, lr) without loading weights.
+!python scripts/train_saree_lora.py --dataset datasets/saree_drapes --dry-run
+"""
+    ),
+    code(
+        """
+# Drop --dry-run to train. Add --backend qwen_edit --quantize-base 4bit --width 512
+# --height 768 to attempt the 12B model on a T4 instead.
+!python scripts/train_saree_lora.py \\
+    --dataset datasets/saree_drapes \\
+    --name saree-drape-v1 \\
+    --steps 1200
+"""
+    ),
+    code(
+        """
+# Confirm the adapter is discoverable; it appears in the UI dropdown on restart.
+from ai_trial_room.lora import discover_loras, lora_choices
+
+for spec in discover_loras():
+    print(spec.describe())
+print()
+print("UI dropdown:", lora_choices())
+"""
+    ),
+    markdown(
+        """
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -420,6 +495,9 @@ else:
 | Weights download very slowly | Set `HF_TOKEN`; anonymous downloads are rate-limited |
 | `QwenImageEditPlusPipeline` missing | `pip install -U diffusers` — needs ≥ 0.36.0 |
 | Kaggle can't reach Hugging Face | *Settings → Internet → On* |
+| LoRA trained but "does nothing" | The trigger token must be in the prompt; the app inserts it, manual calls must too |
+| LoRA output is noise | The adapter was trained for a different base model — check `aitr_lora.json` |
+| OOM while training | Use `--backend flux_klein`, or `--quantize-base 4bit --width 512 --height 768` |
 | `numpy.dtype size changed` | A NumPy-2 wheel crept in: `pip install "numpy==1.26.4"` and restart the kernel |
 
 ## Licensing reminder

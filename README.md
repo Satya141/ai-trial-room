@@ -149,6 +149,10 @@ flowchart TD
 | [`postprocessing/face_preserve.py`](ai_trial_room/postprocessing/face_preserve.py) | FaceMesh hull → tone match → Laplacian blend, with drift guard. |
 | [`postprocessing/blend.py`](ai_trial_room/postprocessing/blend.py) | LAB colour match, Laplacian pyramid blending, selective sharpening. |
 | [`postprocessing/validate.py`](ai_trial_room/postprocessing/validate.py) | Output quality checks that flag results needing a human look. |
+| [`lora.py`](ai_trial_room/lora.py) | Adapter discovery, compatibility gating, trigger insertion, loading. |
+| [`training/dataset.py`](ai_trial_room/training/dataset.py) | `drape` and `paired` dataset layouts, scanning and validation. |
+| [`training/caption.py`](ai_trial_room/training/caption.py) | Template and VLM captioning, aligned to the inference vocabulary. |
+| [`training/train_lora.py`](ai_trial_room/training/train_lora.py) | Flow-matching LoRA trainer with hardware-aware defaults. |
 | [`app.py`](app.py) | Gradio UI. |
 
 ### Design decisions worth calling out
@@ -378,6 +382,67 @@ the run: it is recorded as `failed` and the batch continues. `--resume` skips
 outputs that already exist, so an interrupted overnight run picks up where it
 stopped.
 
+### Training a drape LoRA
+
+The base models drape a Nivi saree competently and a Nauvari one badly. A LoRA
+trained on your own correctly-draped photos is the fix. Full dataset guide:
+[`datasets/README.md`](datasets/README.md).
+
+```bash
+python scripts/caption_dataset.py --dataset datasets/saree_drapes
+```
+
+```bash
+python scripts/train_saree_lora.py --dataset datasets/saree_drapes --dry-run
+```
+
+```bash
+python scripts/train_saree_lora.py --dataset datasets/saree_drapes --name saree-drape-v1
+```
+
+The adapter lands in `loras/saree-drape-v1/` and appears in the UI's **Drape
+LoRA** dropdown on next start. `apply_trigger` inserts the trigger token
+(`aitrsaree`) into the prompt automatically — forgetting it is the usual reason a
+fresh LoRA appears to do nothing.
+
+#### Which base model can you actually train?
+
+| Base | Params | Practical minimum | On a 16 GB T4 |
+|---|---|---|---|
+| `FLUX.2-klein-4B` | 4 B | 16 GB | ✅ **Default target** |
+| `Qwen-Image-Edit-2511` | 12 B | 24 GB | ⚠️ Marginal — needs 4-bit + 512 px |
+
+`default_config` reads your VRAM and picks for you; `--dry-run` prints the
+resolved plan plus warnings. Both bases are Apache-2.0, so either adapter is
+yours to sell.
+
+#### Two dataset modes
+
+| Mode | You need | Teaches | Realistic? |
+|---|---|---|---|
+| **`drape`** | Single photos of well-draped garments + captions | What each regional drape *looks like* | ✅ Your catalogue photography |
+| `paired` | Same person before *and* after, per garment | The garment-transfer behaviour itself | ❌ Needs controlled reshoots |
+
+Start with `drape`. It works on an editing model because Qwen-Image-Edit and
+FLUX.2 use **one transformer** for generation and editing — the edit path just
+adds reference conditioning, so teaching the drape distribution improves it too.
+
+What a `drape` LoRA will **not** do is improve how faithfully a specific
+garment's print transfers. Only `paired` data teaches that. Expect **better
+drapes, not better print fidelity.**
+
+#### The loss is flow matching, not DDPM
+
+These are rectified-flow transformers. For clean latent `x1` and noise `x0`:
+
+```
+xt     = (1 - t) * x0 + t * x1
+target = x1 - x0            # velocity, NOT the noise
+```
+
+Training them with a DDPM epsilon objective is a silent, expensive mistake, so
+`test_flow_match_target_is_velocity_not_noise` pins it numerically.
+
 ### Comparison grids (for a LinkedIn post)
 
 Every permitted backend, same inputs, same seed:
@@ -526,7 +591,9 @@ Stated plainly, because a demo that hides these wastes the buyer's time.
 
 | Limitation | Detail |
 |---|---|
-| Nauvari drapes are unreliable | Dhoti-style nine-yard drapes have thin training representation. The negative prompt fights it; Phase 3's LoRA is the real fix. |
+| Nauvari drapes are unreliable | Dhoti-style nine-yard drapes have thin training representation. The negative prompt fights it; a `drape` LoRA is the real fix. |
+| A `drape` LoRA improves drape, not print fidelity | It teaches the silhouette distribution, not garment transfer. Only `paired` data does the latter, and that data is hard to collect. |
+| LoRA training on a T4 is marginal for the 12 B model | Use `FLUX.2-klein-4B`, or rent a 24 GB card for a Qwen adapter. |
 | Heavy occlusion confuses the mask | Arms folded across the torso, or a held handbag, break garment parsing. |
 | Fine zari and mirror work softens | Diffusion output loses sub-pixel metallic thread. Use the **Best** preset, which refines the pallu, and raise garment sharpening. |
 | Region masks are geometric, not segmented | Pallu and pleat masks come from pose landmarks, so they approximate where the fabric *should* be, not where the model actually put it. Unusual poses reduce refinement accuracy. |
@@ -549,8 +616,10 @@ Stated plainly, because a demo that hides these wastes the buyer's time.
   garment sub-region geometry, region-targeted pallu refinement pass, Laplacian
   identity blending with skin-tone matching, output validation, quality presets,
   catalogue batch mode. **109 tests.**
-- **Phase 3.** LoRA fine-tuning for sarees: dataset layout, captioning helper,
-  T4-tuned training script, LoRA loading in `edit_backend.py`.
+- **Phase 3 — done.** `drape` and `paired` dataset layouts with validation,
+  template and VLM captioning, flow-matching LoRA trainer with hardware-aware
+  defaults, adapter discovery with compatibility gating, automatic trigger
+  insertion, LoRA dropdown in the UI. **166 tests.**
 - **Phase 4.** Hugging Face Spaces deployment: Space config, ZeroGPU, README
   card.
 
@@ -558,8 +627,10 @@ Shop-deployment items still beyond the original scope: a REST API with job queue
 per-tenant branding, usage metering, and an output audit log for disputes.
 
 **⚠️ Not yet run on a GPU.** Every test here is CPU-level logic — geometry,
-masks, prompts, licensing, orchestration. No try-on image has been generated, so
-the prompt templates and refinement strengths are reasoned, not tuned. Run
+masks, prompts, licensing, orchestration, and the flow-matching maths. No try-on
+image has been generated and **no training run has completed**, so prompt
+templates, refinement strengths and training hyperparameters are reasoned, not
+tuned; step time and final LoRA quality are unmeasured. Run
 [`notebooks/run_on_kaggle.ipynb`](notebooks/run_on_kaggle.ipynb) before trusting
 any quality claim in this README.
 
@@ -575,7 +646,8 @@ any quality claim in this README.
 | MediaPipe | Google |
 | SegFormer | NVIDIA · ATR fine-tune by mattmdjaga |
 | rembg / u2net | Daniel Gatis · Xuebin Qin et al. |
-| diffusers, transformers | Hugging Face |
+| diffusers, transformers, peft | Hugging Face |
+| Qwen2.5-VL (optional captioning) | Alibaba Qwen team — Apache-2.0 |
 
 Built as a portfolio project. The code in this repository is yours to adapt;
 the model weights are governed by their own licences, listed above.
