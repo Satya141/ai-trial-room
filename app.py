@@ -161,7 +161,7 @@ def on_garment_url(url: str) -> tuple[Any, str]:
     note = " (from the product page)" if fetched.from_product_page else ""
     return (
         gr.update(value=fetched.image),
-        f"✅ Garment loaded{note} — {fetched.image.width}×{fetched.image.height}.",
+        f"✅ Garment loaded{note} - {fetched.image.width}×{fetched.image.height}.",
     )
 
 
@@ -729,15 +729,15 @@ def _about_markdown() -> str:
     return f"""
 ### How it works
 
-1. **Preprocess** — your photo is letterboxed (never cropped, so a saree hem
+1. **Preprocess** - your photo is letterboxed (never cropped, so a saree hem
    survives), pose is detected with MediaPipe, and a human-parsing model marks
    which pixels are existing clothing.
-2. **Route** — draped garments (saree, lehenga) always go to a reference-editing
+2. **Route** - draped garments (saree, lehenga) always go to a reference-editing
    model, because garment-warping models cannot physically represent a drape.
-3. **Generate** — the person and garment are passed as two reference images
+3. **Generate** - the person and garment are passed as two reference images
    alongside a prompt that names the specific garment components (pleats, pallu,
    choli, dupatta) the style requires.
-4. **Postprocess** — your original face is blended back in, and colour and
+4. **Postprocess** - your original face is blended back in, and colour and
    lighting are matched to your photo.
 
 ### Models & licences
@@ -746,7 +746,7 @@ def _about_markdown() -> str:
 |---|---|---|---|
 {rows}
 
-### Supporting models — all commercially usable
+### Supporting models - all commercially usable
 
 | Component | Model | Licence |
 |---|---|---|
@@ -756,7 +756,7 @@ def _about_markdown() -> str:
 
 Human parsing is pluggable. The default is MediaPipe Selfie Multiclass
 (Apache-2.0), whose coarse `clothes` class is split into upper and lower garments
-using the detected hip line — which is what keeps a kurti mask off your trousers.
+using the detected hip line - which is what keeps a kurti mask off your trousers.
 The finer-grained SegFormer model is research-licensed and disabled unless
 `ALLOW_NONCOMMERCIAL=1`.
 
@@ -771,7 +771,7 @@ beyond timings.
 
 - Heavy occlusion (arms folded across the body) confuses the garment mask.
 - Very fine zari and mirror work can soften; raise inference steps to help.
-- Nauvari (dhoti-style) drapes are the least reliable — the training data for
+- Nauvari (dhoti-style) drapes are the least reliable - the training data for
   that silhouette is thin. Phase 3's LoRA fine-tune targets exactly this.
 - Seated and three-quarter-turned poses are less reliable than standing front-on.
 """

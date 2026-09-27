@@ -25,18 +25,18 @@ Prefixes must match the `Category` enum values exactly: `dress`, `kurti`,
 
 - Standing, facing the camera, arms away from the torso
 - Even lighting, plain-ish background
-- **Full length** (head to feet) — required for saree and lehenga examples, since
+- **Full length** (head to feet) - required for saree and lehenga examples, since
   `require_framing` rejects half-body photos for draped garments
 - At least 384 px on the short edge
 
 **Garment photos**
 
 - Flat-lay or mannequin product shot, plain background
-- The whole garment in frame — for a saree, include the pallu, which carries most
+- The whole garment in frame - for a saree, include the pallu, which carries most
   of the design
 - At least 256 px on the short edge
 
-## ⚠️ Licensing and consent
+## Licensing and consent
 
 `.gitignore` excludes this directory's contents by default, deliberately: photos
 of people must not be committed by accident. To add a curated example:
@@ -49,7 +49,7 @@ Before you do, confirm:
 
 - You have **written permission** from the person in the photo to publish it, or
   it is a stock/synthetic image licensed for redistribution.
-- Garment photos are your own, or licensed for your use — shop catalogue images
+- Garment photos are your own, or licensed for your use - shop catalogue images
   usually are not.
 
 For a public demo, commissioning or generating a small set of consented images is

@@ -42,15 +42,15 @@ def code(text: str) -> dict:
 CELLS = [
     markdown(
         """
-# AI Trial Room — Virtual Try-On for Indian Wear
+# AI Trial Room - Virtual Try-On for Indian Wear
 
 Run the full app on a **free Kaggle T4 (16 GB)** or **Colab T4** and get a public
 share link.
 
 | | |
 |---|---|
-| **Primary model** | `Qwen/Qwen-Image-Edit-2511` — Apache-2.0 ✅ commercial |
-| **Fast alternative** | `black-forest-labs/FLUX.2-klein-4B` — Apache-2.0 ✅ commercial |
+| **Primary model** | `Qwen/Qwen-Image-Edit-2511` - Apache-2.0 ✅ commercial |
+| **Fast alternative** | `black-forest-labs/FLUX.2-klein-4B` - Apache-2.0 ✅ commercial |
 | **Categories** | Dress, Kurti, Kurta, Saree, Lehenga |
 | **Saree drapes** | Nivi, Bengali, Gujarati, Nauvari |
 
@@ -64,7 +64,7 @@ share link.
    Colab secret of the same name. Not strictly required for these Apache-2.0
    models, but it avoids anonymous rate limits.
 
-> First run downloads ~20 GB of weights and takes 10–20 minutes. Subsequent
+> First run downloads ~20 GB of weights and takes 10-20 minutes. Subsequent
 > runs in the same session are instant.
 """
     ),
@@ -105,15 +105,15 @@ print("\\n".join(tail) if tail else "install completed quietly")
     ),
     markdown(
         """
-### Optional: Nunchaku INT4 — big VRAM saving
+### Optional: Nunchaku INT4 - big VRAM saving
 
 Nunchaku's SVDQuant weights shrink the 12 B Qwen transformer from ~40 GB (bf16)
-to ~7 GB, and with async CPU offload it runs in **3–4 GB**. On a 16 GB T4 this
+to ~7 GB, and with async CPU offload it runs in **3-4 GB**. On a 16 GB T4 this
 is the difference between 40-step generations that fit comfortably and ones that
 OOM halfway through a demo.
 
 Wheels are built per (Python, PyTorch) pair, so pick the one matching this
-runtime. Skip this cell if it errors — the app detects Nunchaku's absence and
+runtime. Skip this cell if it errors - the app detects Nunchaku's absence and
 falls back to bf16 with CPU offload automatically.
 """
     ),
@@ -147,7 +147,7 @@ from pathlib import Path
 REPO_URL = "{REPO_URL}"
 PROJECT_DIR = Path("/kaggle/working/ai-trial-room")
 
-# A Kaggle Dataset upload lands under /kaggle/input — prefer it if present.
+# A Kaggle Dataset upload lands under /kaggle/input - prefer it if present.
 for candidate in Path("/kaggle/input").glob("*/app.py") if Path("/kaggle/input").exists() else []:
     PROJECT_DIR = candidate.parent
     print(f"Using uploaded dataset at {{PROJECT_DIR}}")
@@ -226,7 +226,7 @@ print("configured")
     ),
     markdown(
         """
-## 5. Sanity check — no GPU needed, no weights downloaded
+## 5. Sanity check - no GPU needed, no weights downloaded
 
 109 tests covering mask geometry, drape prompts, Laplacian blending, output
 validation, licence gating and batch orchestration.
@@ -314,7 +314,7 @@ else:
         """
 ## 7. Launch the app
 
-This downloads the model weights on first use (~20 GB, 10–20 min) and prints a
+This downloads the model weights on first use (~20 GB, 10-20 min) and prints a
 public `*.gradio.live` link. Keep the cell running while you demo.
 """
     ),
@@ -327,7 +327,7 @@ public `*.gradio.live` link. Keep the cell running while you demo.
         """
 ## 8. Optional: build a comparison grid for LinkedIn
 
-Same inputs, every permitted backend, identical seed — so any difference you
+Same inputs, every permitted backend, identical seed - so any difference you
 see is the model, not the noise.
 """
     ),
@@ -420,14 +420,14 @@ LoRA trained on your own correctly-draped photos is the fix.
 | Base | Params | On a 16 GB T4 |
 |---|---|---|
 | `FLUX.2-klein-4B` | 4 B | ✅ default target |
-| `Qwen-Image-Edit-2511` | 12 B | ⚠️ marginal — needs 4-bit + 512 px |
+| `Qwen-Image-Edit-2511` | 12 B | ⚠️ marginal - needs 4-bit + 512 px |
 
 Dataset layout, photo guidance and the consent checklist are in
 [`datasets/README.md`](../datasets/README.md). Short version: name files
 `nivi_001.jpg`, `bengali_002.jpg`, … and aim for 150+ balanced images.
 
 > Nothing here has been validated on a GPU. The loss and memory strategy are
-> correct by construction, but no run has completed — treat the
+> correct by construction, but no run has completed - treat the
 > hyperparameters as starting points.
 """
     ),
@@ -488,7 +488,7 @@ print("UI dropdown:", lora_choices())
 ## 11. Optional: deploy to a Hugging Face Space
 
 Push this app to your own Space with ZeroGPU. The dry run prints the exact upload
-manifest and refuses to proceed if anything is missing or looks like a leak —
+manifest and refuses to proceed if anything is missing or looks like a leak -
 training photos, trained adapters and `.env` are never uploaded.
 """
     ),
@@ -515,17 +515,17 @@ training photos, trained adapters and `.env` are never uploaded.
 |---|---|
 | `CUDA out of memory` | Install Nunchaku (cell 2b), or set `AITR_SEQ_CPU_OFFLOAD=1`, or drop `AITR_HEIGHT` to 768 |
 | `No person detected` | Use a brighter, front-facing photo where both shoulders are visible |
-| `needs a photo showing the person from head to at least the knees` | Sarees and lehengas require a full-length photo — this guard is deliberate |
+| `needs a photo showing the person from head to at least the knees` | Sarees and lehengas require a full-length photo - this guard is deliberate |
 | Weights download very slowly | Set `HF_TOKEN`; anonymous downloads are rate-limited |
-| `QwenImageEditPlusPipeline` missing | `pip install -U diffusers` — needs ≥ 0.36.0 |
+| `QwenImageEditPlusPipeline` missing | `pip install -U diffusers` - needs ≥ 0.36.0 |
 | Kaggle can't reach Hugging Face | *Settings → Internet → On* |
 | LoRA trained but "does nothing" | The trigger token must be in the prompt; the app inserts it, manual calls must too |
-| LoRA output is noise | The adapter was trained for a different base model — check `aitr_lora.json` |
+| LoRA output is noise | The adapter was trained for a different base model - check `aitr_lora.json` |
 | OOM while training | Use `--backend flux_klein`, or `--quantize-base 4bit --width 512 --height 768` |
 | `numpy.dtype size changed` | A NumPy-2 wheel crept in: `pip install "numpy==1.26.4"` and restart the kernel |
 | `libGL.so.1: cannot open shared object file` | On a Space, `space/packages.txt` supplies `libgl1`; locally `apt install libgl1` |
 | Space build fails on `sdk_version` | It must match the pinned `gradio` in `space/requirements.txt` |
-| ZeroGPU call killed mid-generation | The declared duration was too low — lower the steps or use the Fast preset |
+| ZeroGPU call killed mid-generation | The declared duration was too low - lower the steps or use the Fast preset |
 
 ## Licensing reminder
 
@@ -533,7 +533,7 @@ The default configuration uses **only Apache-2.0 / MIT models**, including the
 human parser (MediaPipe Selfie Multiclass), so output may be used commercially.
 
 Setting `ALLOW_NONCOMMERCIAL=1` enables CatVTON (CC BY-NC-SA 4.0) and the
-SegFormer parser (NVIDIA research licence) — **do not sell anything produced that
+SegFormer parser (NVIDIA research licence) - **do not sell anything produced that
 way.** A deployed Space forces this off at startup regardless.
 """
     ),

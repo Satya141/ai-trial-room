@@ -18,7 +18,7 @@ Push to a private Space on ZeroGPU::
 What gets uploaded
 ------------------
 The application package, ``app.py``, and the contents of ``space/`` promoted to
-the Space root — so ``space/README.md`` becomes the Space card (its YAML front
+the Space root - so ``space/README.md`` becomes the Space card (its YAML front
 matter is what configures the Space) and ``space/requirements.txt`` replaces the
 project's root requirements.
 
@@ -30,7 +30,7 @@ Secrets
 -------
 ``HF_TOKEN`` is read from the environment and used to authenticate. It is never
 written into the Space. If your Space needs a token at runtime, set it as a Space
-*secret* in the Space's own settings UI — this script will not do it for you,
+*secret* in the Space's own settings UI - this script will not do it for you,
 because a token pushed as a file would be committed to the Space's git history.
 """
 

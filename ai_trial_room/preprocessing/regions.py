@@ -7,7 +7,7 @@ saree, but not enough to *improve* one, because the failure modes are
 region-specific:
 
 * The **pallu** is the decorated end carried over a shoulder. It holds most of a
-  saree's design value and is where customers look first — and it is also where
+  saree's design value and is where customers look first - and it is also where
   diffusion output softens most, because it is a large diagonal expanse of
   patterned fabric.
 * The **pleats** at the front waist are what make a drape read as real. Models

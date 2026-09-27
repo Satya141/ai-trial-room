@@ -1,7 +1,7 @@
 """Tests for the Phase 3 LoRA training layer.
 
 Covers dataset scanning and validation, caption generation, flow-matching maths,
-training-config hardware guards, and LoRA discovery and loading — all without a
+training-config hardware guards, and LoRA discovery and loading - all without a
 GPU or any model weights.
 
 The flow-matching tests matter most: training a rectified-flow model with a DDPM

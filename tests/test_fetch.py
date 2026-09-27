@@ -2,7 +2,7 @@
 
 The SSRF guards matter most. This feature takes a URL from an untrusted user and
 fetches it server-side, and on a public Space that request originates inside
-someone else's infrastructure — so ``localhost``, private ranges and cloud
+someone else's infrastructure - so ``localhost``, private ranges and cloud
 metadata endpoints must be unreachable, including via a redirect from a public
 host.
 
@@ -57,7 +57,7 @@ def _online(host: str = "upload.wikimedia.org") -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# SSRF guards — no network needed, these reject before any request
+# SSRF guards - no network needed, these reject before any request
 # --------------------------------------------------------------------------- #
 
 
@@ -161,7 +161,7 @@ def test_limits_are_sane() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Product-page extraction — pure parsing, no network
+# Product-page extraction - pure parsing, no network
 # --------------------------------------------------------------------------- #
 
 
@@ -214,7 +214,7 @@ def test_relative_urls_resolve_against_the_page() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Live fetches — skipped offline
+# Live fetches - skipped offline
 # --------------------------------------------------------------------------- #
 
 

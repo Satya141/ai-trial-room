@@ -3,10 +3,10 @@
 A salesperson does not want to download a photo and re-upload it. They want to
 paste the supplier's link. Two cases, handled transparently:
 
-*Direct image URL* — ``https://shop.example/sarees/0421.jpg``
+*Direct image URL* - ``https://shop.example/sarees/0421.jpg``
     Downloaded directly.
 
-*Product page* — ``https://shop.example/products/kanjivaram-silk-saree``
+*Product page* - ``https://shop.example/products/kanjivaram-silk-saree``
     The HTML is fetched and the main product image is extracted from the page's
     Open Graph / Twitter Card metadata, which practically every e-commerce
     platform emits for link previews.
