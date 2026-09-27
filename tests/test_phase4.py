@@ -410,7 +410,26 @@ def test_space_readme_has_every_required_key() -> None:
 
     assert front_matter["sdk"] == "gradio", "ZeroGPU only supports the Gradio SDK"
     assert front_matter["app_file"] == "app.py"
-    assert front_matter["license"] == "apache-2.0"
+
+
+def test_space_card_does_not_give_away_the_source_licence() -> None:
+    """The Space card must not imply this code is open source.
+
+    It previously declared ``license: apache-2.0``, describing the models the app
+    loads. On a public Space card that reads as licensing the source itself,
+    which contradicts LICENSE. The card must point at the proprietary terms.
+    """
+    front_matter = _front_matter()
+
+    assert front_matter["license"] == "other"
+    assert front_matter["license_name"] == "proprietary"
+    assert front_matter["license_link"] == "LICENSE"
+
+    licence = (PROJECT_ROOT / "LICENSE").read_text(encoding="utf-8")
+    assert "All rights reserved" in licence
+    assert "J Satyanarayana" in licence
+    # The model licences are a separate matter and must stay carved out.
+    assert "THIRD-PARTY COMPONENTS" in licence
 
 
 def test_space_sdk_version_matches_the_pinned_gradio() -> None:
