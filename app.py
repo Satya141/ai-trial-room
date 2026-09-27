@@ -61,6 +61,7 @@ from ai_trial_room.spaces_support import (
 )
 from ai_trial_room.utils.device import detect_hardware, vram_report
 from ai_trial_room.utils.errors import InvalidInputError, TrialRoomError
+from ai_trial_room.utils.fetch import fetch_image
 from ai_trial_room.utils.image_io import (
     download_cache_dir,
     make_side_by_side,
@@ -125,6 +126,42 @@ def on_category_change(category_label: str) -> tuple[Any, Any, Any]:
         gr.update(visible=category is Category.SAREE),
         gr.update(visible=category is Category.LEHENGA),
         gr.update(visible=category.is_draped),
+    )
+
+
+def on_garment_url(url: str) -> tuple[Any, str]:
+    """Fetch a garment image from a pasted link.
+
+    Accepts a direct image URL or a shop's product page, from which the main
+    product image is pulled out of the page's link-preview metadata.
+
+    Parameters
+    ----------
+    url:
+        Whatever the user pasted.
+
+    Returns
+    -------
+    tuple
+        ``(garment_image_update, status_markdown)``. On failure the image is left
+        untouched so a bad paste does not clear a good upload.
+    """
+    if not (url or "").strip():
+        return gr.update(), ""
+
+    try:
+        fetched = fetch_image(url)
+    except TrialRoomError as exc:
+        logger.info("Garment URL rejected: %s | %s", exc.user_message, exc.detail)
+        return gr.update(), f"⚠️ {exc.user_message}"
+    except Exception as exc:  # noqa: BLE001 - last resort for a user-supplied URL
+        logger.exception("Unexpected failure fetching a garment URL")
+        return gr.update(), f"⚠️ Could not load that link. ({type(exc).__name__})"
+
+    note = " (from the product page)" if fetched.from_product_page else ""
+    return (
+        gr.update(value=fetched.image),
+        f"✅ Garment loaded{note} — {fetched.image.width}×{fetched.image.height}.",
     )
 
 
@@ -457,8 +494,18 @@ def build_ui() -> gr.Blocks:
                         label="2. Garment photo",
                         type="pil",
                         height=320,
-                        sources=["upload", "clipboard"],
+                        sources=["upload", "webcam", "clipboard"],
                     )
+
+                with gr.Row():
+                    garment_url_input = gr.Textbox(
+                        label="…or paste a garment link",
+                        placeholder="https://shop.example/products/kanjivaram-silk-saree",
+                        scale=4,
+                        max_lines=1,
+                    )
+                    fetch_button = gr.Button("Load link", scale=1)
+                url_status = gr.Markdown("", elem_classes=["aitr-notice"])
 
                 framing_hint = gr.Markdown(
                     "**Tip:** for sarees and lehengas use a full-length photo "
@@ -643,6 +690,12 @@ def build_ui() -> gr.Blocks:
             inputs=category_input,
             outputs=[drape_input, dupatta_input, framing_hint],
         )
+        for trigger in (fetch_button.click, garment_url_input.submit):
+            trigger(
+                on_garment_url,
+                inputs=garment_url_input,
+                outputs=[garment_input, url_status],
+            )
         preset_input.change(on_preset_change, preset_input, refine_input)
         consent_input.change(on_consent_change, consent_input, generate_button)
         free_button.click(free_memory, outputs=memory_status)
