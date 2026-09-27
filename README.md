@@ -233,11 +233,12 @@ pip install -r requirements.txt
 ### 3. Set your token (optional but recommended)
 
 ```bash
-cp .env.example .env    # then edit it
+export HF_TOKEN=hf_your_token_here
 ```
 
-Tokens are read from the environment only — `HF_TOKEN` is never written to code
-or committed.
+Avoids anonymous download rate limits. Read from the environment only, never
+from code. Every other setting is listed under [Configuration](#configuration)
+and has a working default.
 
 ### 4. Verify without downloading any weights
 
