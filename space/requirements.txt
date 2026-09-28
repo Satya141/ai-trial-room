@@ -12,7 +12,7 @@
 spaces
 
 # --- core inference -------------------------------------------------------- #
-diffusers==0.36.0
+diffusers==0.37.1
 transformers==4.57.1
 accelerate==1.10.1
 safetensors==0.6.2

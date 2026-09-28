@@ -15,7 +15,7 @@
 # Verify with:  python -c "import torch; print(torch.cuda.is_available())"
 
 # --- core inference -------------------------------------------------------- #
-diffusers==0.36.0             # QwenImageEditPlusPipeline + Flux2KleinPipeline
+diffusers==0.37.1             # QwenImageEditPlusPipeline + Flux2KleinPipeline
 transformers==4.57.1          # text encoders + SegFormer human parsing
 accelerate==1.10.1            # device_map, cpu offload hooks
 safetensors==0.6.2

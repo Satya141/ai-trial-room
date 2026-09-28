@@ -87,7 +87,7 @@ alone and install only what is missing. Pinning `numpy<2` matters: MediaPipe
         """
 %%capture install_log
 # Core inference stack
-!pip install -q "diffusers==0.36.0" "transformers==4.57.1" "accelerate==1.10.1" \\
+!pip install -q "diffusers==0.37.1" "transformers==4.57.1" "accelerate==1.10.1" \\
                "safetensors==0.6.2" "sentencepiece==0.2.0" "peft==0.17.1"
 
 # UI + preprocessing
@@ -517,7 +517,7 @@ training photos, trained adapters and `.env` are never uploaded.
 | `No person detected` | Use a brighter, front-facing photo where both shoulders are visible |
 | `needs a photo showing the person from head to at least the knees` | Sarees and lehengas require a full-length photo - this guard is deliberate |
 | Weights download very slowly | Set `HF_TOKEN`; anonymous downloads are rate-limited |
-| `QwenImageEditPlusPipeline` missing | `pip install -U diffusers` - needs ≥ 0.36.0 |
+| `QwenImageEditPlusPipeline` or `Flux2KleinPipeline` missing | `pip install -U diffusers` - needs ≥ 0.37.0 |
 | Kaggle can't reach Hugging Face | *Settings → Internet → On* |
 | LoRA trained but "does nothing" | The trigger token must be in the prompt; the app inserts it, manual calls must too |
 | LoRA output is noise | The adapter was trained for a different base model - check `aitr_lora.json` |
