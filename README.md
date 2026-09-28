@@ -698,6 +698,8 @@ Stated plainly, because a demo that hides these wastes the buyer's time.
 - **Phase 4 - done.** Commercially-safe human parsing (the last non-commercial
   dependency removed), ZeroGPU support with dynamic duration estimation, Space
   card and config, verified deploy script. **201 tests.**
+- **Since Phase 4.** Garment-from-link input: paste a product page or a direct
+  image URL, fetched server-side behind SSRF guards. **225 tests.**
 
 Shop-deployment items still beyond the original scope: a REST API with job queue,
 per-tenant branding, usage metering, and an output audit log for disputes.
